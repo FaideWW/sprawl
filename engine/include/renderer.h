@@ -1,5 +1,6 @@
 #ifndef RENDERER_H_
 #define RENDERER_H_
+#include <stdbool.h>
 #include <stdint.h>
 
 #define MAX_POINTS (1 << 18)  // ~256k
@@ -44,6 +45,11 @@ int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t 
 * returns: 0 if a frame was presented (and thus the dirty flag should be cleared), non-zero otherwise
 */
 int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]);
+
+/*
+*   returns: 0 if a valid timestamp was written to ns, 1 if not
+*/
+int renderer_gpu_time_ns(uint64_t *ns);
 
 RendererStatus renderer_status(void);
 

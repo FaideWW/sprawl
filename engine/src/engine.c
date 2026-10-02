@@ -194,6 +194,11 @@ void engine_set_background(uint32_t r, uint32_t g, uint32_t b) {
     dirty = true;
 }
 
+double engine_gpu_time_ms(void) {
+    uint64_t ns;
+    return renderer_gpu_time_ns(&ns) == 0 ? ((double)ns / 1.0e6) : -1.0;
+}
+
 char *engine_target_buffer(void) {
     return target_buf;
 }

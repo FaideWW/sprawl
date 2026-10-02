@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +26,15 @@ static struct {
     WGPUBuffer uniform_buf;
     WGPUBuffer point_buf;
     WGPUBuffer stroke_buf;
+
+    // timestamps 
+    bool has_timestamps;
+    WGPUQuerySet ts_qs;
+    WGPUBuffer ts_resolve_buf;
+    WGPUBuffer ts_readback_buf;
+    bool ts_readback_pending;
+    bool has_gpu_time;
+    uint64_t last_gpu_time;
 } r;
 
 static void log_error(WGPUStringView msg) {
@@ -32,7 +42,7 @@ static void log_error(WGPUStringView msg) {
     else fprintf(stderr, "%.*s\n", (int)msg.length, msg.data);
 }
 
-static void handle_init_shaders_error_scope(
+static void handle_init_resources_error_scope(
     WGPUPopErrorScopeStatus status,
     WGPUErrorType type,
     WGPUStringView message,
@@ -67,6 +77,25 @@ static void handle_device_uncapturederror(
     WGPU_NULLABLE void *userdata2
 ) {
     log_error(message);
+}
+
+static void handle_timestamp_readback_buffer_map(
+    WGPUMapAsyncStatus status,
+    WGPUStringView message,
+    WGPU_NULLABLE void *userdata1,
+    WGPU_NULLABLE void *userdata2
+) {
+    if (status != WGPUMapAsyncStatus_Success) {
+        log_error(message);
+        r.ts_readback_pending = false;
+        return;
+    }
+
+    const uint64_t *ts = wgpuBufferGetConstMappedRange(r.ts_readback_buf, 0, 16);
+    if (ts[1] >= ts[0]) r.last_gpu_time = ts[1] - ts[0];
+    wgpuBufferUnmap(r.ts_readback_buf);
+    r.has_gpu_time = true;
+    r.ts_readback_pending = false;
 }
 
 typedef enum {
@@ -106,7 +135,7 @@ static void write_uniforms(void) {
     wgpuQueueWriteBuffer(r.queue, r.uniform_buf, 0, &uniform_data, sizeof(uniform_buffer));
 }
 
-static void init_shaders(void) {
+static void init_resources(void) {
     WGPUShaderModuleDescriptor module_desc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
 
     WGPUShaderSourceWGSL src = WGPU_SHADER_SOURCE_WGSL_INIT;
@@ -141,6 +170,30 @@ static void init_shaders(void) {
     WGPUBuffer stroke_buf = wgpuDeviceCreateBuffer(r.device, &stroke_buf_desc);
     
     r.stroke_buf = stroke_buf;
+
+    if (r.has_timestamps) {
+        WGPUQuerySetDescriptor timestamps_desc = WGPU_QUERY_SET_DESCRIPTOR_INIT;
+        timestamps_desc.type = WGPUQueryType_Timestamp;
+        timestamps_desc.count = 2;
+        timestamps_desc.label = (WGPUStringView){ "timestamp queryset", WGPU_STRLEN };
+
+        WGPUQuerySet timestamp_qs = wgpuDeviceCreateQuerySet(r.device, &timestamps_desc);
+        r.ts_qs = timestamp_qs;
+
+        WGPUBufferDescriptor resolve_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
+        resolve_desc.size = sizeof(uint8_t) * 16;
+        resolve_desc.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
+        resolve_desc.label = (WGPUStringView){ "timestamp resolve buffer", WGPU_STRLEN };
+        WGPUBuffer resolve_buf = wgpuDeviceCreateBuffer(r.device, &resolve_desc);
+        r.ts_resolve_buf = resolve_buf;
+
+        WGPUBufferDescriptor readback_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
+        readback_desc.size = sizeof(uint8_t) * 16;
+        readback_desc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+        readback_desc.label = (WGPUStringView){ "timestamp readback buffer", WGPU_STRLEN };
+        WGPUBuffer readback_buf = wgpuDeviceCreateBuffer(r.device, &readback_desc);
+        r.ts_readback_buf = readback_buf;
+    }
 
     WGPURenderPipelineDescriptor pipeline_desc = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     pipeline_desc.layout = NULL;
@@ -252,10 +305,10 @@ static void handle_device_request(
     }
 
     wgpuDevicePushErrorScope(r.device, WGPUErrorFilter_Validation);
-    init_shaders();
+    init_resources();
     WGPUPopErrorScopeCallbackInfo error_cb = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
     error_cb.mode = WGPUCallbackMode_AllowSpontaneous;
-    error_cb.callback = handle_init_shaders_error_scope;
+    error_cb.callback = handle_init_resources_error_scope;
     wgpuDevicePopErrorScope(r.device, error_cb);
 }
 
@@ -274,6 +327,7 @@ static void handle_adapter_request(
 
     r.adapter = adapter;
 
+
     WGPUDeviceLostCallbackInfo devicelost_cb = WGPU_DEVICE_LOST_CALLBACK_INFO_INIT;
     devicelost_cb.callback = handle_device_devicelost;
     devicelost_cb.mode = WGPUCallbackMode_AllowSpontaneous;
@@ -283,7 +337,17 @@ static void handle_adapter_request(
 
     WGPUDeviceDescriptor device_desc = WGPU_DEVICE_DESCRIPTOR_INIT;
     device_desc.label = (WGPUStringView){ "test device", WGPU_STRLEN };
-    device_desc.requiredFeatureCount = 0;
+
+    WGPUFeatureName timestampQuery = WGPUFeatureName_TimestampQuery;
+    if (wgpuAdapterHasFeature(r.adapter, WGPUFeatureName_TimestampQuery)) {
+        device_desc.requiredFeatures = &timestampQuery;
+        device_desc.requiredFeatureCount = 1;
+        r.has_timestamps = true;
+    } else {
+        device_desc.requiredFeatureCount = 0;
+        r.has_timestamps = false;
+    }
+
     device_desc.requiredLimits = NULL;
     device_desc.defaultQueue.label = (WGPUStringView){ "test queue", WGPU_STRLEN };
     device_desc.deviceLostCallbackInfo = devicelost_cb;
@@ -399,6 +463,15 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     WGPURenderPassDescriptor render_pass_desc = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     render_pass_desc.colorAttachmentCount = 1;
     render_pass_desc.colorAttachments = &color;
+
+    WGPUPassTimestampWrites ts_writes = WGPU_PASS_TIMESTAMP_WRITES_INIT;
+    if (r.has_timestamps) {
+        ts_writes.querySet = r.ts_qs;
+        ts_writes.beginningOfPassWriteIndex = 0;
+        ts_writes.endOfPassWriteIndex = 1;
+
+        render_pass_desc.timestampWrites = &ts_writes;
+    }
    
     WGPURenderPassEncoder render_pass = wgpuCommandEncoderBeginRenderPass(encoder, &render_pass_desc);
 
@@ -414,6 +487,15 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     wgpuRenderPassEncoderEnd(render_pass);
     wgpuRenderPassEncoderRelease(render_pass);
 
+    bool copied = false;
+    if (r.has_timestamps) {
+        wgpuCommandEncoderResolveQuerySet(encoder, r.ts_qs, 0, 2, r.ts_resolve_buf, 0);
+        if (!r.ts_readback_pending) {
+            wgpuCommandEncoderCopyBufferToBuffer(encoder, r.ts_resolve_buf, 0, r.ts_readback_buf, 0, 16);
+            copied = true;
+        }
+    }
+
     WGPUCommandBufferDescriptor cmd_buffer_desc = WGPU_COMMAND_BUFFER_DESCRIPTOR_INIT;
     cmd_buffer_desc.label = (WGPUStringView){ "test command buffer", WGPU_STRLEN };
     WGPUCommandBuffer command_buf = wgpuCommandEncoderFinish(encoder, &cmd_buffer_desc);
@@ -422,12 +504,28 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     wgpuQueueSubmit(r.queue, 1, &command_buf);
     wgpuCommandBufferRelease(command_buf);
 
+    if (copied) {
+        WGPUBufferMapCallbackInfo readback_cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+        readback_cb.mode = WGPUCallbackMode_AllowSpontaneous;
+        readback_cb.callback = handle_timestamp_readback_buffer_map;
+        wgpuBufferMapAsync(r.ts_readback_buf, WGPUMapMode_Read, 0, 16, readback_cb);
+        r.ts_readback_pending = true;
+    }
+
     wgpuTextureViewRelease(target_view);
     wgpuTextureRelease(tex.texture);
 
     return 0;
 }
 
+
+
 RendererStatus renderer_status(void) {
     return r.status;
+}
+
+int renderer_gpu_time_ns(uint64_t *ns) {
+    if (!r.has_timestamps || r.status != RendererStatus_Ready || !r.has_gpu_time) return 1;
+    *ns = r.last_gpu_time;
+    return 0;
 }

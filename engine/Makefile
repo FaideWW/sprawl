@@ -22,7 +22,10 @@ EXPORTS := "[ \
 		   '_engine_frame', \
 		   '_engine_set_color', \
 		   '_engine_set_background', \
+		   '_engine_gpu_time_ms', \
 		   '_engine_target_buffer', \
+		   '_engine_sample_buffer', \
+		   '_engine_sample_buffer', \
 		   '_engine_sample_buffer', \
 		   '_engine_point_count', \
 		   '_engine_stroke_count', \

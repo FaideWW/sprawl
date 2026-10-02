@@ -33,6 +33,7 @@ body {
 #stats {
     float: right;
     display: inline-block;
+    text-align: right;
 }
 
 #colors {

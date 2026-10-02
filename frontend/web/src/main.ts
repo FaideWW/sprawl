@@ -1,4 +1,9 @@
 import EngineModule from "./engine.js";
+import {
+    createTimingBuffer,
+    timingBufferAvg,
+    timingBufferPush,
+} from "./timing.ts";
 
 interface CanvasDims {
     width: number;
@@ -19,6 +24,11 @@ const engine = await EngineModule();
 const samples = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
 const selector = engine._engine_target_buffer();
 
+const frametimeBuffer = createTimingBuffer(30);
+const engineFrametimeBuffer = createTimingBuffer(30);
+const gpuFrametimeBuffer = createTimingBuffer(30);
+let lastFrameTime = 0;
+
 const canvasDims: CanvasDims = {
     width: canvas.width,
     height: canvas.height,
@@ -30,6 +40,7 @@ const canvasDims: CanvasDims = {
 const SAMPLE_FLOATS = 4;
 const MAX_SAMPLES = 256;
 const ZOOM_FACTOR = 0.002;
+const STATS_UPDATES_PER_SEC = 4;
 
 const pointMax = engine._engine_point_max();
 const strokeMax = engine._engine_stroke_max();
@@ -41,10 +52,8 @@ let lastX = 0;
 let lastY = 0;
 let strokeStartTime: number = 0;
 let maxReached = false;
-let lastPointCount = -1;
-let lastStrokeCount = -1;
 let framePresented = false;
-let lastFramePresented = false;
+let lastStatUpdate = 0;
 
 let pendingResize: { w: number; h: number } | null = null;
 
@@ -146,7 +155,11 @@ function handleBeginStroke(e: PointerEvent) {
     handleAppendSampleResult(appendEvents([e]));
 }
 
-document.addEventListener(
+document.addEventListener("visibilitychange", (e) => {
+    lastFrameTime = e.timeStamp;
+});
+
+window.addEventListener(
     "wheel",
     (e) => {
         e.preventDefault();
@@ -272,26 +285,64 @@ function updateStats() {
     const pointCount = engine._engine_point_count();
     const strokeCount = engine._engine_stroke_count();
 
-    if (
-        pointCount === lastPointCount &&
-        strokeCount === lastStrokeCount &&
-        framePresented === lastFramePresented
-    )
-        return;
-    lastPointCount = pointCount;
-    lastStrokeCount = strokeCount;
+    const pointsStr = `points ${pointCount}/${pointMax} (${((pointCount / pointMax) * 100).toPrecision(2)}%)`;
+    const strokesStr = `strokes ${strokeCount}/${strokeMax} (${((strokeCount / strokeMax) * 100).toPrecision(2)}%)`;
+    const renderingStr = `rendering: ${framePresented ? "true" : "false"}`;
 
-    stats.textContent = `points ${pointCount}/${pointMax} (${((pointCount / pointMax) * 100).toPrecision(2)}%) strokes ${strokeCount}/${strokeMax} (${((strokeCount / strokeMax) * 100).toPrecision(2)}%) - rendering: ${framePresented ? "true" : "false"}`;
+    let avgFT = "N/A";
+    let avgFPS = "N/A";
+    if (frametimeBuffer.filled) {
+        const avg = timingBufferAvg(frametimeBuffer);
+        avgFT = `${avg.toPrecision(2)}ms`;
+        avgFPS = `${(1000 / avg).toFixed(2)}`;
+    }
+
+    let avgEngine = "N/A";
+    if (engineFrametimeBuffer.filled) {
+        const avg = timingBufferAvg(engineFrametimeBuffer);
+        avgEngine = `${avg.toPrecision(2)}ms`;
+    }
+
+    let avgGPU = "N/A";
+    if (gpuFrametimeBuffer.filled) {
+        const avg = timingBufferAvg(gpuFrametimeBuffer);
+        avgGPU = `${avg.toPrecision(2)}ms`;
+    }
+
+    const fps = `fps: ${avgFPS} ft:${avgFT} eng:${avgEngine} gpu:${avgGPU}`;
+
+    stats.innerHTML = `${pointsStr}<br />${strokesStr}<br />${renderingStr}<br />${fps}`;
 }
 
-function renderStep() {
+function renderStep(now: number) {
     if (pendingResize) {
         engine._engine_resize(pendingResize.w, pendingResize.h);
         pendingResize = null;
     }
+
+    const engineFrameStart = performance.now();
     framePresented = engine._engine_frame();
-    updateStats();
-    lastFramePresented = framePresented;
+    const engineFrameTime = performance.now() - engineFrameStart;
+
+    if (framePresented) {
+        if (lastFrameTime > 0) {
+            timingBufferPush(frametimeBuffer, now - lastFrameTime);
+        }
+
+        timingBufferPush(engineFrametimeBuffer, engineFrameTime);
+
+        const gputime = engine._engine_gpu_time_ms();
+        if (gputime >= 0) {
+            timingBufferPush(gpuFrametimeBuffer, gputime);
+        }
+    }
+
+    lastFrameTime = now;
+
+    if (now - lastStatUpdate > (1 / STATS_UPDATES_PER_SEC) * 1000) {
+        updateStats();
+        lastStatUpdate = now;
+    }
     requestAnimationFrame(renderStep);
 }
 

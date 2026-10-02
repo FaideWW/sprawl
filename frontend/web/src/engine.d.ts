@@ -11,6 +11,7 @@ export interface EngineModule {
     _engine_frame(): bool;
     _engine_set_color(r: number, g: number, b: number): void;
     _engine_set_background(r: number, g: number, b: number): void;
+    _engine_gpu_time_ms(): number;
     _engine_target_buffer(): number;
     _engine_sample_buffer(): number;
     _engine_point_count(): number;
