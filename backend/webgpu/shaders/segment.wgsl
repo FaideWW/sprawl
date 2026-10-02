@@ -31,8 +31,10 @@ struct VsOut {
 };
 
 // each stroke segment has a bounding box represented as a quad. the vertex shader 
-// takes each vertex of the bounding box quad, adds 1px of padding to prevent clipping 
-// during anti-aliasing, and then returns the clipspace coordinate of that vertex 
+// takes each vertex of the bounding box quad, converts the local coordinates into 
+// worldspace coordinates using the stroke's origin and scale (k), adds 1px of 
+// padding to prevent clipping during anti-aliasing, and returns the clipspace 
+// coordinate of that vertex 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     // vi = stroke * 4 + corner

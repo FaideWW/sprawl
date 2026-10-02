@@ -4,6 +4,8 @@ body {
     padding: 0;
     width: 100%;
     height: 100%;
+
+    font-family: sans-serif;
 }
 
 #app {
@@ -16,4 +18,29 @@ body {
     touch-action: none;
     width: 100%;
     height: 100%;
+}
+
+#toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    color: #ccc;
+    background-color: #333;
+    padding: 2px;
+}
+
+#stats {
+    float: right;
+    display: inline-block;
+}
+
+#colors {
+    display: inline-block;
+}
+
+#colors > input {
+    margin: 0;
+    padding: 0;
+    border: 0;
 }

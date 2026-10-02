@@ -1,4 +1,6 @@
+#include <math.h>
 #include <stdbool.h>
+#include <string.h>
 #include "renderer.h"
 #include "engine.h"
 // #include "arena.h"
@@ -19,6 +21,8 @@ static uint32_t point_count;
 static uint32_t uploaded_points;
 static sprawl_camera camera;
 static sprawl_viewport viewport;
+static float current_color[4];
+static float background[4];
 
 static bool stroke_open;
 
@@ -32,10 +36,7 @@ BeginStrokeResult engine_begin_stroke(void) {
     sprawl_stroke stroke = {0};
 
     stroke.scale = 1.0 / camera.zoom;
-    stroke.color[0] = 0.9;
-    stroke.color[1] = 0.9;
-    stroke.color[2] = 0.9;
-    stroke.color[3] = 1.0;
+    memcpy(stroke.color, current_color, sizeof(float) * 4);
     stroke.radius = 1.0;
 
     stroke.first_point = point_count;
@@ -157,7 +158,25 @@ void engine_frame(void) {
         uploaded_points = point_count;
     }
 
-    renderer_frame(rendered, stroke_count);
+    renderer_frame(rendered, stroke_count, background);
+}
+
+static float srgb_to_linear(float c) {
+    return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+void engine_set_color(uint32_t r, uint32_t g, uint32_t b) {
+    current_color[0] = srgb_to_linear((float)r / 255.0);
+    current_color[1] = srgb_to_linear((float)g / 255.0);
+    current_color[2] = srgb_to_linear((float)b / 255.0);
+    current_color[3] = 1.0;
+}
+
+void engine_set_background(uint32_t r, uint32_t g, uint32_t b) {
+    background[0] = srgb_to_linear((float)r / 255.0);
+    background[1] = srgb_to_linear((float)g / 255.0);
+    background[2] = srgb_to_linear((float)b / 255.0);
+    background[3] = 1.0;
 }
 
 char *engine_target_buffer(void) {
@@ -178,7 +197,15 @@ void engine_init(uint32_t w, uint32_t h) {
 
     uploaded_points = 0;
     stroke_open = false;
+
+    engine_set_background(0x22, 0x22, 0x22); // #222222
+    engine_set_color(0xDD, 0xDD, 0xDD); // #DDDDDD
     
     renderer_init(target_buf, viewport.w, viewport.h);
     // arena_alloc(&arena);
 }
+
+uint32_t engine_point_count(void) { return point_count; }
+uint32_t engine_stroke_count(void) { return stroke_count; }
+uint32_t engine_point_max(void) { return MAX_POINTS; }
+uint32_t engine_stroke_max(void) { return MAX_STROKES; }

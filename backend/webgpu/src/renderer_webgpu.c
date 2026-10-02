@@ -242,8 +242,9 @@ static void handle_device_request(
 
     wgpuSurfaceCapabilitiesFreeMembers(surface_caps);
 
+    ConfigureSurfaceResult configure_result = configure_surface();
 
-    if (configure_surface() != ConfigureSurfaceSuccess) {
+    if (configure_result == ConfigureSurfaceError) {
         r.status = RendererStatus_Error;
         WGPUStringView err_msg = (WGPUStringView){ "failed to configure surface", WGPU_STRLEN };
         log_error(err_msg);
@@ -361,10 +362,9 @@ int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t 
     return 0;
 }
 
-void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count) {
-    if (r.status != RendererStatus_Ready) {
-        return;
-    }
+void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]) {
+    if (r.status != RendererStatus_Ready) return;
+    if (r.width == 0 || r.height == 0) return;
 
     if (count > 0) wgpuQueueWriteBuffer(r.queue, r.stroke_buf, 0, strokes, count * sizeof(sprawl_rendered_stroke));
 
@@ -393,7 +393,7 @@ void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count) {
     color.view = target_view;
     color.loadOp = WGPULoadOp_Clear;
     color.storeOp = WGPUStoreOp_Store;
-    color.clearValue = (WGPUColor){ 0.02, 0.02, 0.02, 1.0 };
+    color.clearValue = (WGPUColor){ clear_rgba[0], clear_rgba[1], clear_rgba[2], clear_rgba[3] };
     color.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
 
     WGPURenderPassDescriptor render_pass_desc = WGPU_RENDER_PASS_DESCRIPTOR_INIT;

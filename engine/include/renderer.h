@@ -40,7 +40,7 @@ void renderer_resize(uint32_t w, uint32_t h);
 */
 int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t count);
 
-void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count);
+void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]);
 
 RendererStatus renderer_status(void);
 

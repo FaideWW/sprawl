@@ -12,7 +12,12 @@ type PointerMode = "none" | "drawing" | "panning";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const canvas = app.querySelector<HTMLCanvasElement>("#canvas")!;
+const stats = app.querySelector<HTMLDivElement>("#stats")!;
+const strokeColor = app.querySelector<HTMLInputElement>("#stroke-color")!;
+const bgColor = app.querySelector<HTMLInputElement>("#bg-color")!;
 const engine = await EngineModule();
+const samples = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
+const selector = engine._engine_target_buffer();
 
 const canvasDims: CanvasDims = {
     width: canvas.width,
@@ -26,6 +31,9 @@ const SAMPLE_FLOATS = 4;
 const MAX_SAMPLES = 256;
 const ZOOM_FACTOR = 0.002;
 
+const pointMax = engine._engine_point_max();
+const strokeMax = engine._engine_stroke_max();
+
 let activePointerId: number | null = null;
 let pointerMode: PointerMode = "none";
 let spaceHeld = false;
@@ -33,9 +41,8 @@ let lastX = 0;
 let lastY = 0;
 let strokeStartTime: number = 0;
 let maxReached = false;
-const samples = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
-
-console.log(engine._add(5, 10));
+let lastPointCount = -1;
+let lastStrokeCount = -1;
 
 let pendingResize: { w: number; h: number } | null = null;
 
@@ -157,6 +164,7 @@ document.addEventListener(
 );
 
 window.addEventListener("keydown", (e) => {
+    if (e.target instanceof HTMLInputElement) return;
     if (e.code === "Space") {
         e.preventDefault();
         spaceHeld = true;
@@ -240,16 +248,48 @@ canvas.addEventListener("lostpointercapture", (e) => {
     activePointerId = null;
 });
 
+function parseHex(value: string): [number, number, number] {
+    return [
+        parseInt(value.slice(1, 3), 16),
+        parseInt(value.slice(3, 5), 16),
+        parseInt(value.slice(5, 7), 16),
+    ];
+}
+
+strokeColor.addEventListener("input", () => {
+    const value = strokeColor.value;
+    engine._engine_set_color(...parseHex(value));
+});
+
+bgColor.addEventListener("input", () => {
+    const value = bgColor.value;
+    engine._engine_set_background(...parseHex(value));
+});
+
+function updateStats() {
+    const pointCount = engine._engine_point_count();
+    const strokeCount = engine._engine_stroke_count();
+
+    if (pointCount === lastPointCount && strokeCount === lastStrokeCount)
+        return;
+    lastPointCount = pointCount;
+    lastStrokeCount = strokeCount;
+
+    stats.textContent = `points ${pointCount}/${pointMax} (${((pointCount / pointMax) * 100).toPrecision(2)}%) strokes ${strokeCount}/${strokeMax} (${((strokeCount / strokeMax) * 100).toPrecision(2)}%)`;
+}
+
 function renderStep() {
     if (pendingResize) {
         engine._engine_resize(pendingResize.w, pendingResize.h);
         pendingResize = null;
     }
+    updateStats();
     engine._engine_frame();
     requestAnimationFrame(renderStep);
 }
 
-const selector = engine._engine_target_buffer();
 engine.stringToUTF8("#canvas", selector, 256);
 engine._engine_init(canvas.width, canvas.height);
+engine._engine_set_color(...parseHex(strokeColor.value));
+engine._engine_set_background(...parseHex(bgColor.value));
 requestAnimationFrame(renderStep);
