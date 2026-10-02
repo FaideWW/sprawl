@@ -25,10 +25,7 @@ static float current_color[4];
 static float background[4];
 
 static bool stroke_open;
-
-int add(int x, int y) {
-    return x+y;
-}
+static bool dirty = false;
 
 BeginStrokeResult engine_begin_stroke(void) {
     if (stroke_count >= MAX_STROKES) return BeginStrokeResult_MaxReached;
@@ -45,6 +42,7 @@ BeginStrokeResult engine_begin_stroke(void) {
 
     strokes[stroke_count++] = stroke;
 
+    dirty = true;
     return BeginStrokeResult_Success;
 }
 
@@ -81,6 +79,7 @@ AppendSamplesResult engine_append_samples(uint32_t sampleCount) {
         stroke->points_count++;
     }
 
+    dirty = true;
     return AppendSamplesResult_Success;
 }
 
@@ -100,6 +99,7 @@ void engine_end_stroke(void) {
     }
 
     stroke_open = false;
+    dirty = true;
 }
 
 void engine_cancel_stroke(void) {
@@ -109,11 +109,14 @@ void engine_cancel_stroke(void) {
     if (uploaded_points > point_count) uploaded_points = point_count;
 
     stroke_open = false;
+    dirty = true;
 }
 
 void engine_pan(float dx, float dy) {
     camera.center[0] -= dx / camera.zoom;
     camera.center[1] -= dy / camera.zoom;
+
+    dirty = true;
 }
 
 void engine_zoom_at(float sx, float sy, double f) {
@@ -126,16 +129,21 @@ void engine_zoom_at(float sx, float sy, double f) {
 
     camera.center[0] = wx - (sx - viewport.w/ 2.0) / camera.zoom;
     camera.center[1] = wy - (sy - viewport.h/ 2.0) / camera.zoom;
+    
+    dirty = true;
 }
 
 void engine_resize(uint32_t w, uint32_t h) {
     viewport.w = w;
     viewport.h = h;
     renderer_resize(viewport.w, viewport.h);
+    
+    dirty = true;
 }
 
-void engine_frame(void) {
+bool engine_frame(void) {
     // arena_clear(&arena);
+    if (!dirty) return false;
 
     for (uint32_t i = 0; i < stroke_count; i++) {
         
@@ -158,7 +166,12 @@ void engine_frame(void) {
         uploaded_points = point_count;
     }
 
-    renderer_frame(rendered, stroke_count, background);
+    if (renderer_frame(rendered, stroke_count, background) == 0 && uploaded_points == point_count) {
+        dirty = false;
+        return true;
+    }
+
+    return false;
 }
 
 static float srgb_to_linear(float c) {
@@ -177,6 +190,8 @@ void engine_set_background(uint32_t r, uint32_t g, uint32_t b) {
     background[1] = srgb_to_linear((float)g / 255.0);
     background[2] = srgb_to_linear((float)b / 255.0);
     background[3] = 1.0;
+    
+    dirty = true;
 }
 
 char *engine_target_buffer(void) {
@@ -202,6 +217,8 @@ void engine_init(uint32_t w, uint32_t h) {
     engine_set_color(0xDD, 0xDD, 0xDD); // #DDDDDD
     
     renderer_init(target_buf, viewport.w, viewport.h);
+
+    dirty = true;
     // arena_alloc(&arena);
 }
 

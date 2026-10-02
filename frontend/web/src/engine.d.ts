@@ -8,7 +8,7 @@ export interface EngineModule {
     _engine_pan(dx: number, dy: number): void;
     _engine_zoom_at(sx: number, sy: number, f: number): void;
     _engine_resize(w: number, h: number): void;
-    _engine_frame(): void;
+    _engine_frame(): bool;
     _engine_set_color(r: number, g: number, b: number): void;
     _engine_set_background(r: number, g: number, b: number): void;
     _engine_target_buffer(): number;

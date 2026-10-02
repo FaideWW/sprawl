@@ -362,9 +362,9 @@ int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t 
     return 0;
 }
 
-void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]) {
-    if (r.status != RendererStatus_Ready) return;
-    if (r.width == 0 || r.height == 0) return;
+int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]) {
+    if (r.status != RendererStatus_Ready) return -1;
+    if (r.width == 0 || r.height == 0) return -1;
 
     if (count > 0) wgpuQueueWriteBuffer(r.queue, r.stroke_buf, 0, strokes, count * sizeof(sprawl_rendered_stroke));
 
@@ -375,7 +375,7 @@ void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const
         WGPUStringView err_msg = (WGPUStringView){ "failed to get texture", WGPU_STRLEN };
         log_error(err_msg);
         if (tex.texture) wgpuTextureRelease(tex.texture);
-        return;
+        return -1;
     }
 
     WGPUTextureViewDescriptor view_desc = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
@@ -424,6 +424,8 @@ void renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const
 
     wgpuTextureViewRelease(target_view);
     wgpuTextureRelease(tex.texture);
+
+    return 0;
 }
 
 RendererStatus renderer_status(void) {

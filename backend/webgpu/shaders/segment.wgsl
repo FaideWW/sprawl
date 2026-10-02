@@ -18,6 +18,8 @@ struct Stroke {
     points_count: u32,
 }
 
+const MIN_RADIUS = 0.5;
+
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var<storage, read> points: array<Point>;
 @group(0) @binding(2) var<storage, read> strokes: array<Stroke>;
@@ -41,6 +43,9 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     let s = strokes[vi >> 2u]; 
     let corner = vi & 3u;
 
+    let radius = max(s.radius, MIN_RADIUS);
+    let fade = min(s.radius / MIN_RADIUS, 1.0);
+
     let pa = points[ii];
     let pb = points[ii + 1u];
     let a = vec2f(pa.x, pa.y) * s.k + s.offset;
@@ -54,7 +59,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     let x = f32(corner & 1u) * 2.0 - 1.0;
     let y = f32(corner >> 1u) * 2.0 - 1.0;
 
-    let pad = s.radius + 1.0;
+    let pad = radius + 1.0;
     let p = select(a, b, x > 0.0) + dir * (x * pad) + n * (y * pad);
 
     let clip = p / u.viewport * 2.0 - 1.0;
@@ -62,8 +67,8 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     o.pos = vec4f(clip.x, -clip.y, 0.0, 1.0);
     o.a = vec3f(a, pa.p);
     o.b = vec3f(b, pb.p);
-    o.color = s.color;
-    o.radius = s.radius;
+    o.color = vec4f(s.color.rgb, s.color.a * fade);
+    o.radius = radius;
     return o;
 }
 

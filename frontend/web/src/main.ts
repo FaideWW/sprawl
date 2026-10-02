@@ -43,6 +43,8 @@ let strokeStartTime: number = 0;
 let maxReached = false;
 let lastPointCount = -1;
 let lastStrokeCount = -1;
+let framePresented = false;
+let lastFramePresented = false;
 
 let pendingResize: { w: number; h: number } | null = null;
 
@@ -270,12 +272,16 @@ function updateStats() {
     const pointCount = engine._engine_point_count();
     const strokeCount = engine._engine_stroke_count();
 
-    if (pointCount === lastPointCount && strokeCount === lastStrokeCount)
+    if (
+        pointCount === lastPointCount &&
+        strokeCount === lastStrokeCount &&
+        framePresented === lastFramePresented
+    )
         return;
     lastPointCount = pointCount;
     lastStrokeCount = strokeCount;
 
-    stats.textContent = `points ${pointCount}/${pointMax} (${((pointCount / pointMax) * 100).toPrecision(2)}%) strokes ${strokeCount}/${strokeMax} (${((strokeCount / strokeMax) * 100).toPrecision(2)}%)`;
+    stats.textContent = `points ${pointCount}/${pointMax} (${((pointCount / pointMax) * 100).toPrecision(2)}%) strokes ${strokeCount}/${strokeMax} (${((strokeCount / strokeMax) * 100).toPrecision(2)}%) - rendering: ${framePresented ? "true" : "false"}`;
 }
 
 function renderStep() {
@@ -283,8 +289,9 @@ function renderStep() {
         engine._engine_resize(pendingResize.w, pendingResize.h);
         pendingResize = null;
     }
+    framePresented = engine._engine_frame();
     updateStats();
-    engine._engine_frame();
+    lastFramePresented = framePresented;
     requestAnimationFrame(renderStep);
 }
 

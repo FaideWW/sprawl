@@ -11,7 +11,6 @@ $(error no BACKEND= specified)
 endif
 
 EXPORTS := "[ \
-		   '_add', \
 		   '_engine_init', \
 		   '_engine_begin_stroke', \
 		   '_engine_append_samples', \
