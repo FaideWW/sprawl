@@ -26,6 +26,7 @@ static struct {
     WGPUBuffer uniform_buf;
     WGPUBuffer point_buf;
     WGPUBuffer stroke_buf;
+    int frames_in_flight;
 
     // timestamps 
     bool has_timestamps;
@@ -77,6 +78,15 @@ static void handle_device_uncapturederror(
     WGPU_NULLABLE void *userdata2
 ) {
     log_error(message);
+}
+
+static void handle_queue_work_done(
+    WGPUQueueWorkDoneStatus status,
+    WGPUStringView message,
+    WGPU_NULLABLE void *userdata1,
+    WGPU_NULLABLE void *userdata2
+) {
+    r.frames_in_flight--;
 }
 
 static void handle_timestamp_readback_buffer_map(
@@ -426,9 +436,18 @@ int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t 
     return 0;
 }
 
+bool renderer_can_frame(void) {
+    return (
+        !(r.status != RendererStatus_Ready) && 
+        !(r.width == 0 || r.height == 0) && 
+        !(r.frames_in_flight >= 2)
+    );
+}
+
 int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]) {
     if (r.status != RendererStatus_Ready) return -1;
     if (r.width == 0 || r.height == 0) return -1;
+    if (r.frames_in_flight >= 2) return -1;
 
     if (count > 0) wgpuQueueWriteBuffer(r.queue, r.stroke_buf, 0, strokes, count * sizeof(sprawl_rendered_stroke));
 
@@ -503,6 +522,12 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
 
     wgpuQueueSubmit(r.queue, 1, &command_buf);
     wgpuCommandBufferRelease(command_buf);
+
+    r.frames_in_flight++;
+    WGPUQueueWorkDoneCallbackInfo work_done_cb = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+    work_done_cb.mode = WGPUCallbackMode_AllowSpontaneous;
+    work_done_cb.callback = handle_queue_work_done;
+    wgpuQueueOnSubmittedWorkDone(r.queue, work_done_cb);
 
     if (copied) {
         WGPUBufferMapCallbackInfo readback_cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;

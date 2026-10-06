@@ -1,9 +1,20 @@
+import { type Bench, createBench } from "./bench.ts";
 import EngineModule from "./engine.js";
 import {
     createTimingBuffer,
     timingBufferAvg,
     timingBufferPush,
 } from "./timing.ts";
+
+declare global {
+    interface Window {
+        bench: (
+            drawFrames: number,
+            viewFrames: number,
+            setBaseline: boolean,
+        ) => void;
+    }
+}
 
 interface CanvasDims {
     width: number;
@@ -21,8 +32,8 @@ const stats = app.querySelector<HTMLDivElement>("#stats")!;
 const strokeColor = app.querySelector<HTMLInputElement>("#stroke-color")!;
 const bgColor = app.querySelector<HTMLInputElement>("#bg-color")!;
 const engine = await EngineModule();
-const samples = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
-const selector = engine._engine_target_buffer();
+const sample_buffer = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
+const selector_buffer = engine._engine_target_buffer();
 
 const frametimeBuffer = createTimingBuffer(30);
 const engineFrametimeBuffer = createTimingBuffer(30);
@@ -82,7 +93,7 @@ function appendEvents(events: PointerEvent[]): number {
             const e = chunk[j];
             if (e === undefined) continue;
 
-            const offset = samples + count * SAMPLE_FLOATS;
+            const offset = sample_buffer + count * SAMPLE_FLOATS;
             heap[offset] = (e.clientX - canvasDims.left) * canvasDims.sx;
             heap[offset + 1] = (e.clientY - canvasDims.top) * canvasDims.sx;
             heap[offset + 2] = e.pressure;
@@ -98,6 +109,40 @@ function appendEvents(events: PointerEvent[]): number {
 
     return 0;
 }
+
+function writeSamples(samples: number[][]) {
+    const heap = engine.HEAPF32;
+    for (let i = 0; i < samples.length; i++) {
+        const offset = sample_buffer + i * SAMPLE_FLOATS;
+        heap[offset] =
+            ((samples[i]?.[0] ?? 0) - canvasDims.left) * canvasDims.sx;
+        heap[offset + 1] =
+            ((samples[i]?.[1] ?? 0) - canvasDims.top) * canvasDims.sx;
+        heap[offset + 2] = samples[i]?.[2] ?? 0.5;
+        heap[offset + 3] = samples[i]?.[3] ?? 0;
+    }
+}
+
+let bench: Bench | null = null;
+window.bench = (
+    drawFrames: number,
+    viewFrames: number,
+    setBaseline = false,
+) => {
+    if (bench) return;
+    maxReached = false;
+    pointerMode = "none";
+    engine._debug_engine_clear();
+    engine._engine_set_camera(0, 0, 1);
+    bench = createBench(
+        engine,
+        writeSamples,
+        canvasDims,
+        drawFrames,
+        viewFrames,
+        setBaseline,
+    );
+};
 
 function handleAppendSampleResult(resultCode: number) {
     switch (resultCode) {
@@ -132,7 +177,7 @@ function handleAppendSampleResult(resultCode: number) {
 function handleBeginStroke(e: PointerEvent) {
     if (maxReached === true) return;
     strokeStartTime = e.timeStamp;
-    const beginStrokeResult = engine._engine_begin_stroke();
+    const beginStrokeResult = engine._engine_begin_stroke(Date.now());
     if (beginStrokeResult === 1) {
         // BeginStrokeResult_MaxReached
         engine._engine_end_stroke();
@@ -143,7 +188,7 @@ function handleBeginStroke(e: PointerEvent) {
     } else if (beginStrokeResult === 2) {
         // BeginStrokeResult_HangingOpenStroke
         engine._engine_cancel_stroke();
-        const retryResult = engine._engine_begin_stroke();
+        const retryResult = engine._engine_begin_stroke(Date.now());
         if (retryResult === 1) {
             engine._engine_end_stroke();
             activePointerId = null;
@@ -162,6 +207,7 @@ document.addEventListener("visibilitychange", (e) => {
 window.addEventListener(
     "wheel",
     (e) => {
+        if (bench) return;
         e.preventDefault();
         let dy = e.deltaY;
         if (e.deltaMode === 1) {
@@ -179,24 +225,60 @@ window.addEventListener(
 );
 
 window.addEventListener("keydown", (e) => {
+    if (bench) return;
     if (e.target instanceof HTMLInputElement) return;
-    if (e.code === "Space") {
-        e.preventDefault();
-        spaceHeld = true;
+    switch (e.key.toLowerCase()) {
+        case " ":
+            {
+                e.preventDefault();
+                spaceHeld = true;
+            }
+            break;
+        case "z":
+            {
+                if (
+                    (!e.ctrlKey && !e.metaKey) ||
+                    pointerMode !== "none" ||
+                    spaceHeld
+                )
+                    return;
+                e.preventDefault();
+                if (e.shiftKey) {
+                    engine._engine_redo();
+                } else {
+                    engine._engine_undo();
+                }
+            }
+            break;
+        case "y":
+            {
+                if (
+                    (!e.ctrlKey && !e.metaKey) ||
+                    pointerMode !== "none" ||
+                    spaceHeld
+                )
+                    return;
+                e.preventDefault();
+                engine._engine_redo();
+            }
+            break;
     }
 });
 
 window.addEventListener("keyup", (e) => {
+    if (bench) return;
     if (e.code === "Space") {
         spaceHeld = false;
     }
 });
 
 window.addEventListener("blur", () => {
+    if (bench) return;
     spaceHeld = false;
 });
 
 canvas.addEventListener("pointerdown", (e) => {
+    if (bench) return;
     if (pointerMode !== "none" || (e.button !== 0 && e.button !== 1)) return;
     lastX = e.clientX;
     lastY = e.clientY;
@@ -220,11 +302,13 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 
 canvas.addEventListener("pointerenter", (e) => {
+    if (bench) return;
     lastX = e.clientX;
     lastY = e.clientY;
 });
 
 canvas.addEventListener("pointermove", (e) => {
+    if (bench) return;
     const dx = (e.clientX - lastX) * canvasDims.sx;
     const dy = (e.clientY - lastY) * canvasDims.sx;
     lastX = e.clientX;
@@ -243,6 +327,7 @@ canvas.addEventListener("pointermove", (e) => {
 });
 
 canvas.addEventListener("pointerup", (e) => {
+    if (bench) return;
     if (e.pointerId !== activePointerId) return;
     if (pointerMode === "drawing") engine._engine_end_stroke();
     pointerMode = "none";
@@ -250,6 +335,7 @@ canvas.addEventListener("pointerup", (e) => {
 });
 
 canvas.addEventListener("pointercancel", (e) => {
+    if (bench) return;
     if (e.pointerId !== activePointerId) return;
     if (pointerMode === "drawing") engine._engine_cancel_stroke();
     pointerMode = "none";
@@ -257,6 +343,7 @@ canvas.addEventListener("pointercancel", (e) => {
 });
 
 canvas.addEventListener("lostpointercapture", (e) => {
+    if (bench) return;
     if (e.pointerId !== activePointerId) return;
     if (pointerMode === "drawing") engine._engine_cancel_stroke();
     pointerMode = "none";
@@ -272,11 +359,13 @@ function parseHex(value: string): [number, number, number] {
 }
 
 strokeColor.addEventListener("input", () => {
+    if (bench) return;
     const value = strokeColor.value;
     engine._engine_set_color(...parseHex(value));
 });
 
 bgColor.addEventListener("input", () => {
+    if (bench) return;
     const value = bgColor.value;
     engine._engine_set_background(...parseHex(value));
 });
@@ -319,11 +408,15 @@ function renderStep(now: number) {
         engine._engine_resize(pendingResize.w, pendingResize.h);
         pendingResize = null;
     }
+    if (bench?.step()) {
+        bench = null;
+    }
 
     const engineFrameStart = performance.now();
-    framePresented = engine._engine_frame();
+    framePresented = engine._engine_frame() === 1;
     const engineFrameTime = performance.now() - engineFrameStart;
 
+    let gpuMs = -1;
     if (framePresented) {
         if (lastFrameTime > 0) {
             timingBufferPush(frametimeBuffer, now - lastFrameTime);
@@ -331,23 +424,31 @@ function renderStep(now: number) {
 
         timingBufferPush(engineFrametimeBuffer, engineFrameTime);
 
-        const gputime = engine._engine_gpu_time_ms();
-        if (gputime >= 0) {
-            timingBufferPush(gpuFrametimeBuffer, gputime);
+        const gpuTime = engine._engine_gpu_time_ms();
+        gpuMs = gpuTime;
+        if (gpuTime >= 0) {
+            timingBufferPush(gpuFrametimeBuffer, gpuTime);
         }
     }
 
     lastFrameTime = now;
-
     if (now - lastStatUpdate > (1 / STATS_UPDATES_PER_SEC) * 1000) {
         updateStats();
         lastStatUpdate = now;
     }
+    if (bench && framePresented) {
+        bench.record(engineFrameTime, gpuMs);
+    }
     requestAnimationFrame(renderStep);
 }
 
-engine.stringToUTF8("#canvas", selector, 256);
-engine._engine_init(canvas.width, canvas.height);
-engine._engine_set_color(...parseHex(strokeColor.value));
-engine._engine_set_background(...parseHex(bgColor.value));
-requestAnimationFrame(renderStep);
+function sprawl_init() {
+    const values = crypto.getRandomValues(new Uint32Array(2));
+    engine.stringToUTF8("#canvas", selector_buffer, 256);
+    engine._engine_init(canvas.width, canvas.height, values[0]!, values[1]!);
+    engine._engine_set_color(...parseHex(strokeColor.value));
+    engine._engine_set_background(...parseHex(bgColor.value));
+    requestAnimationFrame(renderStep);
+}
+
+sprawl_init();

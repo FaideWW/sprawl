@@ -2,7 +2,6 @@
 #define ENGINE_H_
 
 #include <stdint.h>
-
 typedef enum {
     AppendSamplesResult_Success = 0,
     AppendSamplesResult_MaxReached = 1,
@@ -17,12 +16,20 @@ typedef enum {
 } BeginStrokeResult;
 
 typedef struct {
+    uint64_t session;
+    uint32_t seq;
+} sprawl_id;
+
+typedef struct {
     float x, y;
     float pressure;
     float t;
 } sprawl_sample;
 
 typedef struct {
+    sprawl_id id;
+    uint64_t z;
+    uint32_t undo_len;
     double origin[2];
     double scale;
     float color[4];

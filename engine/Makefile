@@ -12,20 +12,22 @@ endif
 
 EXPORTS := "[ \
 		   '_engine_init', \
+		   '_debug_engine_clear', \
 		   '_engine_begin_stroke', \
 		   '_engine_append_samples', \
 		   '_engine_end_stroke', \
 		   '_engine_cancel_stroke', \
 		   '_engine_pan', \
 		   '_engine_zoom_at', \
+		   '_engine_set_camera', \
 		   '_engine_resize', \
 		   '_engine_frame', \
 		   '_engine_set_color', \
 		   '_engine_set_background', \
+		   '_engine_undo', \
+		   '_engine_redo', \
 		   '_engine_gpu_time_ms', \
 		   '_engine_target_buffer', \
-		   '_engine_sample_buffer', \
-		   '_engine_sample_buffer', \
 		   '_engine_sample_buffer', \
 		   '_engine_point_count', \
 		   '_engine_stroke_count', \

@@ -42,6 +42,10 @@ void renderer_resize(uint32_t w, uint32_t h);
 int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t count);
 
 /*
+*   returns true if the renderer is ready, visible, and can accept work
+*/
+bool renderer_can_frame(void);
+/*
 * returns: 0 if a frame was presented (and thus the dirty flag should be cleared), non-zero otherwise
 */
 int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]);
