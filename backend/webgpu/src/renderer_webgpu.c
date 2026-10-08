@@ -25,7 +25,10 @@ static struct {
     WGPUBindGroup bind_group;
     WGPUBuffer uniform_buf;
     WGPUBuffer point_buf;
+    uint32_t point_buf_cap;
     WGPUBuffer stroke_buf;
+    uint32_t stroke_buf_cap;
+    uint64_t storage_buffer_size_limit;
     int frames_in_flight;
 
     // timestamps 
@@ -145,6 +148,30 @@ static void write_uniforms(void) {
     wgpuQueueWriteBuffer(r.queue, r.uniform_buf, 0, &uniform_data, sizeof(uniform_buffer));
 }
 
+static void bind_group(void) {
+    WGPUBindGroupLayout bg_layout = wgpuRenderPipelineGetBindGroupLayout(r.pipeline, 0);
+   
+    WGPUBindGroupEntry bg_entries[3] = { WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT };
+    bg_entries[0].binding = 0;
+    bg_entries[0].buffer = r.uniform_buf; 
+    bg_entries[0].size = sizeof(uniform_buffer);
+    bg_entries[1].binding = 1;
+    bg_entries[1].buffer = r.point_buf; 
+    bg_entries[1].size = sizeof(sprawl_point) * r.point_buf_cap;
+    bg_entries[2].binding = 2;
+    bg_entries[2].buffer = r.stroke_buf; 
+    bg_entries[2].size = sizeof(sprawl_rendered_stroke) * r.stroke_buf_cap;
+
+    WGPUBindGroupDescriptor bg_desc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    bg_desc.layout = bg_layout;
+    bg_desc.entryCount = 3;
+    bg_desc.entries = bg_entries;
+    if (r.bind_group) wgpuBindGroupRelease(r.bind_group);
+    r.bind_group = wgpuDeviceCreateBindGroup(r.device, &bg_desc);
+
+    wgpuBindGroupLayoutRelease(bg_layout);
+}
+
 static void init_resources(void) {
     WGPUShaderModuleDescriptor module_desc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
 
@@ -166,16 +193,16 @@ static void init_resources(void) {
     write_uniforms();
 
     WGPUBufferDescriptor point_buf_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
-    point_buf_desc.size = sizeof(sprawl_point) * MAX_POINTS;
-    point_buf_desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+    point_buf_desc.size = sizeof(sprawl_point) * r.point_buf_cap;
+    point_buf_desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
     point_buf_desc.label = (WGPUStringView){ "point storage buffer", WGPU_STRLEN };
     WGPUBuffer point_buf = wgpuDeviceCreateBuffer(r.device, &point_buf_desc);
     
     r.point_buf = point_buf;
 
     WGPUBufferDescriptor stroke_buf_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
-    stroke_buf_desc.size = sizeof(sprawl_rendered_stroke) * MAX_STROKES;
-    stroke_buf_desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+    stroke_buf_desc.size = sizeof(sprawl_rendered_stroke) * r.stroke_buf_cap;
+    stroke_buf_desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
     stroke_buf_desc.label = (WGPUStringView){ "stroke storage buffer", WGPU_STRLEN };
     WGPUBuffer stroke_buf = wgpuDeviceCreateBuffer(r.device, &stroke_buf_desc);
     
@@ -245,26 +272,7 @@ static void init_resources(void) {
 
     wgpuShaderModuleRelease(module);
 
-    WGPUBindGroupLayout bg_layout = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-   
-    WGPUBindGroupEntry bg_entries[3] = { WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT };
-    bg_entries[0].binding = 0;
-    bg_entries[0].buffer = uniform; 
-    bg_entries[0].size = sizeof(uniform_buffer);
-    bg_entries[1].binding = 1;
-    bg_entries[1].buffer = point_buf; 
-    bg_entries[1].size = sizeof(sprawl_point) * MAX_POINTS;
-    bg_entries[2].binding = 2;
-    bg_entries[2].buffer = stroke_buf; 
-    bg_entries[2].size = sizeof(sprawl_rendered_stroke) * MAX_STROKES;
-
-    WGPUBindGroupDescriptor bg_desc = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    bg_desc.layout = bg_layout;
-    bg_desc.entryCount = 3;
-    bg_desc.entries = bg_entries;
-    r.bind_group = wgpuDeviceCreateBindGroup(r.device, &bg_desc);
-
-    wgpuBindGroupLayoutRelease(bg_layout);
+    bind_group();
 }
 
 static void handle_device_request(
@@ -358,7 +366,21 @@ static void handle_adapter_request(
         r.has_timestamps = false;
     }
 
-    device_desc.requiredLimits = NULL;
+    WGPULimits adapterLimits;
+    if (wgpuAdapterGetLimits(r.adapter, &adapterLimits) != WGPUStatus_Success) {
+        r.status = RendererStatus_Error;
+        log_error((WGPUStringView){ "failed to get adaper limits", WGPU_STRLEN });
+        return;
+
+    }
+    
+    WGPULimits deviceLimits = WGPU_LIMITS_INIT;
+    deviceLimits.maxBufferSize = adapterLimits.maxBufferSize;
+    deviceLimits.maxStorageBufferBindingSize = adapterLimits.maxStorageBufferBindingSize;
+
+    r.storage_buffer_size_limit = deviceLimits.maxStorageBufferBindingSize < deviceLimits.maxBufferSize ? deviceLimits.maxStorageBufferBindingSize : deviceLimits.maxBufferSize;
+
+    device_desc.requiredLimits = &deviceLimits;
     device_desc.defaultQueue.label = (WGPUStringView){ "test queue", WGPU_STRLEN };
     device_desc.deviceLostCallbackInfo = devicelost_cb;
     device_desc.uncapturedErrorCallbackInfo  = uncapturederror_cb;
@@ -373,6 +395,9 @@ static void handle_adapter_request(
 void renderer_init(const void *target, uint32_t width, uint32_t height) {
     r.width = width;
     r.height = height;
+
+    r.point_buf_cap = 4096;
+    r.stroke_buf_cap = 4096;
 
     WGPUInstanceDescriptor desc = WGPU_INSTANCE_DESCRIPTOR_INIT;
 
@@ -430,8 +455,66 @@ void renderer_resize(uint32_t w, uint32_t h) {
     }
 }
 
+static bool grow_and_copy_point_buffer(uint32_t requested_points) {
+    uint64_t old_size = r.point_buf_cap * sizeof(sprawl_point);
+    uint32_t cap = r.point_buf_cap;
+    while (cap < requested_points) {
+        cap *= 2;
+        if ((uint64_t)cap * sizeof(sprawl_point) > r.storage_buffer_size_limit) {
+            log_error((WGPUStringView) { "requested point buffer size exceeds device limits", WGPU_STRLEN });
+            r.status = RendererStatus_Error;
+            return false;
+        }
+    } 
+    
+    WGPUBufferDescriptor desc = WGPU_BUFFER_DESCRIPTOR_INIT;
+    desc.size = sizeof(sprawl_point) * cap;
+    desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
+    WGPUBuffer bigger = wgpuDeviceCreateBuffer(r.device, &desc);
+ 
+    WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(r.device, NULL);
+    wgpuCommandEncoderCopyBufferToBuffer(enc, r.point_buf, 0, bigger, 0, old_size);
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, NULL);
+    wgpuQueueSubmit(r.queue, 1, &cmd);
+    wgpuCommandBufferRelease(cmd);
+    wgpuCommandEncoderRelease(enc);
+    wgpuBufferRelease(r.point_buf);
+
+    r.point_buf = bigger;
+    r.point_buf_cap = cap;
+    bind_group();
+    return true;
+}
+
+static bool grow_stroke_buffer(uint32_t requested_strokes) {
+    uint64_t old_size = r.stroke_buf_cap * sizeof(sprawl_rendered_stroke);
+    uint32_t cap = r.stroke_buf_cap;
+    while (cap < requested_strokes) {
+        cap *= 2; 
+        if ((uint64_t)cap * sizeof(sprawl_rendered_stroke) > r.storage_buffer_size_limit) {
+            log_error((WGPUStringView) { "requested stroke buffer size exceeds device limits", WGPU_STRLEN });
+            r.status = RendererStatus_Error;
+            return false;
+        }
+    }
+    
+    WGPUBufferDescriptor desc = WGPU_BUFFER_DESCRIPTOR_INIT;
+    desc.size = sizeof(sprawl_rendered_stroke) * cap;
+    desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
+    WGPUBuffer bigger = wgpuDeviceCreateBuffer(r.device, &desc);
+    wgpuBufferRelease(r.stroke_buf);
+
+    r.stroke_buf = bigger;
+    r.stroke_buf_cap = cap;
+    bind_group();
+    return true;
+}
+
 int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t count) {
     if (r.status != RendererStatus_Ready) return 1;
+    if (first + count > r.point_buf_cap) { 
+        if (!grow_and_copy_point_buffer(first + count)) return 1;
+    }
     wgpuQueueWriteBuffer(r.queue, r.point_buf, first * sizeof(sprawl_point), points, count * sizeof(sprawl_point));
     return 0;
 }
@@ -449,6 +532,9 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     if (r.width == 0 || r.height == 0) return -1;
     if (r.frames_in_flight >= 2) return -1;
 
+    if (count > r.stroke_buf_cap) {
+        if (!grow_stroke_buffer(count)) return -1;
+    }
     if (count > 0) wgpuQueueWriteBuffer(r.queue, r.stroke_buf, 0, strokes, count * sizeof(sprawl_rendered_stroke));
 
     WGPUSurfaceTexture tex = WGPU_SURFACE_TEXTURE_INIT;

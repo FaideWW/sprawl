@@ -3,9 +3,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define MAX_POINTS (1 << 18)  // ~256k
-#define MAX_STROKES (1 << 14) // ~16k
-
 typedef enum RendererStatus {
     RendererStatus_Uninitialized = 0,
     RendererStatus_Ready = 1,

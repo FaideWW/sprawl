@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "renderer.h"
 #include "serialize.h"
@@ -40,8 +41,77 @@ static sprawl_viewport viewport;
 
 static uint32_t doc_revision;
 static uint32_t uploaded_points;
-static sprawl_rendered_stroke rendered[MAX_STROKES];
+static sprawl_rendered_stroke_array rendered;
 static bool dirty = false;
+
+static void *grow_array(void *data, uint32_t cap, uint32_t needed, size_t elem_size, uint32_t *new_cap) {
+    if (needed <= cap) { 
+        *new_cap = cap;
+        return data;  
+    }
+
+    uint32_t target_cap = cap ? cap : 4096;
+    while (target_cap < needed) { 
+        if (UINT32_MAX / 2 < target_cap) { 
+            target_cap = UINT32_MAX;
+        } else if (target_cap * 2 < needed) {
+            target_cap = needed; 
+        } else {
+            target_cap *= 2; 
+        }
+    }
+
+    if (target_cap > SIZE_MAX / elem_size) return NULL;
+    void *new_data = realloc(data, (size_t)target_cap * elem_size);
+    if (new_data == NULL) return NULL;
+
+    *new_cap = target_cap;
+    return new_data;
+}
+
+bool sprawl_reserve_strokes(sprawl_stroke_array *a, uint32_t needed) {
+    if (needed <= a->cap) return true; 
+    uint32_t cap;
+    sprawl_stroke *s = grow_array(a->data, a->cap, needed, sizeof *s, &cap);
+    if (s == NULL) return false;
+
+    a->data = s;
+    a->cap = cap;
+    return true;
+}
+
+bool sprawl_reserve_points(sprawl_point_array *a, uint32_t needed) {
+    if (needed <= a->cap) return true; 
+    uint32_t cap;
+    sprawl_point *p = grow_array(a->data, a->cap, needed, sizeof *p, &cap);
+    if (p == NULL) return false;
+
+    a->data = p;
+    a->cap = cap;
+    return true;
+}
+
+bool reserve_rendered_strokes(sprawl_rendered_stroke_array *a, uint32_t needed) {
+    if (needed <= a->cap) return true; 
+    uint32_t cap;
+    sprawl_rendered_stroke *rs = grow_array(a->data, a->cap, needed, sizeof *rs, &cap);
+    if (rs == NULL) return false;
+
+    a->data = rs;
+    a->cap = cap;
+    return true;
+}
+
+bool sprawl_reserve_u32(u32_array *a, uint32_t needed) {
+    if (needed <= a->cap) return true; 
+    uint32_t cap;
+    uint32_t *u = grow_array(a->data, a->cap, needed, sizeof *u, &cap);
+    if (u == NULL) return false;
+
+    a->data = u;
+    a->cap = cap;
+    return true;
+}
 
 static uint64_t next_z(double now_ms) {
     uint64_t t = (uint64_t)now_ms;
@@ -67,13 +137,12 @@ static uint64_t read_random_u64(void) {
 static void new_session(void) {
     session.id = read_random_u64();
     session.next_seq = 0;
-    session.undo_sp = 0;
-    session.redo_sp = 0;
+    session.undo.count = 0;
+    session.redo.count = 0;
     session.stroke_open = false;
 }
 
 BeginStrokeResult engine_begin_stroke(double now_ms) {
-    if (eng.doc->stroke_count >= MAX_STROKES) return BeginStrokeResult_MaxReached;
     if (session.stroke_open) return BeginStrokeResult_HangingOpenStroke;
     sprawl_stroke stroke = {0};
     stroke.id = (sprawl_id){session.id, session.next_seq++};
@@ -84,11 +153,15 @@ BeginStrokeResult engine_begin_stroke(double now_ms) {
     memcpy(stroke.color, session.color, sizeof(float) * 4);
     stroke.radius = 1.0;
 
-    stroke.first_point = eng.doc->point_count;
+    stroke.first_point = eng.doc->points.count;
     stroke.points_count = 0;
-    session.stroke_open = true;
 
-    eng.doc->strokes[eng.doc->stroke_count++] = stroke;
+    if (!sprawl_reserve_strokes(&eng.doc->strokes, eng.doc->strokes.count+1)) {
+        return BeginStrokeResult_MaxReached;
+    }
+
+    session.stroke_open = true;
+    eng.doc->strokes.data[eng.doc->strokes.count++] = stroke;
 
     dirty = true;
     return BeginStrokeResult_Success;
@@ -99,14 +172,14 @@ BeginStrokeResult engine_begin_stroke(double now_ms) {
 // always fully consumed after calling _engine_append_samples().
 AppendSamplesResult engine_append_samples(uint32_t sampleCount) {
     if (sampleCount > MAX_SAMPLES) return AppendSamplesResult_BufferOverflow;
-    if (eng.doc->point_count >= MAX_POINTS) return AppendSamplesResult_MaxReached;
     if (!session.stroke_open) return AppendSamplesResult_NoOpenStroke;
 
-    sprawl_stroke *stroke = &eng.doc->strokes[eng.doc->stroke_count - 1];
+    sprawl_stroke *stroke = &eng.doc->strokes.data[eng.doc->strokes.count - 1];
 
+    if (!sprawl_reserve_points(&eng.doc->points, eng.doc->points.count + sampleCount)) {
+        return AppendSamplesResult_MaxReached;
+    }
     for (uint32_t i = 0; i < sampleCount; i++) {
-        if (eng.doc->point_count >= MAX_POINTS) return AppendSamplesResult_MaxReached;
-        
         sprawl_sample sample = sample_buf[i];
         sprawl_point point = {0};
         // convert screenspace to worldspace
@@ -123,7 +196,7 @@ AppendSamplesResult engine_append_samples(uint32_t sampleCount) {
         point.y = (float)((wy - stroke->origin[1]) / stroke->scale);
 
         point.p = sample.pressure;
-        eng.doc->points[eng.doc->point_count++] = point;
+        eng.doc->points.data[eng.doc->points.count++] = point;
         stroke->points_count++;
     }
 
@@ -134,21 +207,23 @@ AppendSamplesResult engine_append_samples(uint32_t sampleCount) {
 void engine_end_stroke(void) {
     if (!session.stroke_open) return;
 
-    sprawl_stroke *s = &eng.doc->strokes[eng.doc->stroke_count - 1];
+    sprawl_stroke *s = &eng.doc->strokes.data[eng.doc->strokes.count - 1];
    
     if (s->points_count == 0) {
         // If this stroke has no points, delete it
-        eng.doc->stroke_count--;
+        eng.doc->strokes.count--;
     } else {
         if (s->points_count == 1) {
             // If this stroke has one point, duplicate it so the renderer sees a coherent segment
-            if (eng.doc->point_count < MAX_POINTS) {
-                eng.doc->points[eng.doc->point_count++] = eng.doc->points[s->first_point];
+            if (sprawl_reserve_points(&eng.doc->points, eng.doc->points.count+1)) {
+                eng.doc->points.data[eng.doc->points.count++] = eng.doc->points.data[s->first_point];
                 s->points_count++;
             }
         }
-        session.undo[session.undo_sp++] = eng.doc->stroke_count-1;
-        session.redo_sp = 0;
+        if (sprawl_reserve_u32(&session.undo, session.undo.count + 1)) {
+            session.undo.data[session.undo.count++] = eng.doc->strokes.count-1;
+            session.redo.count = 0;
+        }
     }
 
     doc_revision++;
@@ -160,8 +235,8 @@ void engine_end_stroke(void) {
 void engine_cancel_stroke(void) {
     if (!session.stroke_open) return;
 
-    eng.doc->point_count = eng.doc->strokes[--eng.doc->stroke_count].first_point;
-    if (uploaded_points > eng.doc->point_count) uploaded_points = eng.doc->point_count;
+    eng.doc->points.count = eng.doc->strokes.data[--eng.doc->strokes.count].first_point;
+    if (uploaded_points > eng.doc->points.count) uploaded_points = eng.doc->points.count;
 
     session.stroke_open = false;
     dirty = true;
@@ -210,35 +285,36 @@ bool engine_frame(void) {
     // arena_clear(&arena);
     if (!dirty || !renderer_can_frame()) return false;
 
-    // FIXME: the strokes need to be sorted by z to be drawn in the correct order.
-    // we probably don't want to do this every frame, so it's probably best to do 
-    // it on insertion. but this will break some assumptions we make about the 
-    // stroke array
+    // WARN: the strokes need to be sorted by (z, id) to be drawn in the correct order.
     uint32_t rendered_i = 0;
-    for (uint32_t i = 0; i < eng.doc->stroke_count; i++) {
-        if (eng.doc->strokes[i].undo_len % 2 == 1) continue;
+    if (!reserve_rendered_strokes(&rendered, eng.doc->strokes.count)) {
+        fprintf(stderr, "failed to allocate enough memory for rendered_strokes\n");
+        return false;
+    }
+    for (uint32_t i = 0; i < eng.doc->strokes.count; i++) {
+        if (eng.doc->strokes.data[i].undo_len % 2 == 1) continue;
         
-        rendered[rendered_i].offset[0] = (float)((eng.doc->strokes[i].origin[0] - camera.center[0]) * camera.zoom + (viewport.w / 2.0));
-        rendered[rendered_i].offset[1] = (float)((eng.doc->strokes[i].origin[1] - camera.center[1]) * camera.zoom + (viewport.h / 2.0));
-        rendered[rendered_i].k = (float)(eng.doc->strokes[i].scale * camera.zoom);
+        rendered.data[rendered_i].offset[0] = (float)((eng.doc->strokes.data[i].origin[0] - camera.center[0]) * camera.zoom + (viewport.w / 2.0));
+        rendered.data[rendered_i].offset[1] = (float)((eng.doc->strokes.data[i].origin[1] - camera.center[1]) * camera.zoom + (viewport.h / 2.0));
+        rendered.data[rendered_i].k = (float)(eng.doc->strokes.data[i].scale * camera.zoom);
 
-        rendered[rendered_i].color[0] = eng.doc->strokes[i].color[0];
-        rendered[rendered_i].color[1] = eng.doc->strokes[i].color[1];
-        rendered[rendered_i].color[2] = eng.doc->strokes[i].color[2];
-        rendered[rendered_i].color[3] = eng.doc->strokes[i].color[3];
-        rendered[rendered_i].radius = eng.doc->strokes[i].radius * rendered[rendered_i].k;
+        rendered.data[rendered_i].color[0] = eng.doc->strokes.data[i].color[0];
+        rendered.data[rendered_i].color[1] = eng.doc->strokes.data[i].color[1];
+        rendered.data[rendered_i].color[2] = eng.doc->strokes.data[i].color[2];
+        rendered.data[rendered_i].color[3] = eng.doc->strokes.data[i].color[3];
+        rendered.data[rendered_i].radius = eng.doc->strokes.data[i].radius * rendered.data[rendered_i].k;
 
-        rendered[rendered_i].first_point = eng.doc->strokes[i].first_point;
-        rendered[rendered_i].points_count = eng.doc->strokes[i].points_count;
+        rendered.data[rendered_i].first_point = eng.doc->strokes.data[i].first_point;
+        rendered.data[rendered_i].points_count = eng.doc->strokes.data[i].points_count;
         rendered_i++;
     }
 
-    if (uploaded_points < eng.doc->point_count && 
-        renderer_upload_points(eng.doc->points + uploaded_points, uploaded_points, eng.doc->point_count - uploaded_points) == 0 ) {
-        uploaded_points = eng.doc->point_count;
+    if (uploaded_points < eng.doc->points.count && 
+        renderer_upload_points(eng.doc->points.data + uploaded_points, uploaded_points, eng.doc->points.count - uploaded_points) == 0 ) {
+        uploaded_points = eng.doc->points.count;
     }
 
-    if (renderer_frame(rendered, rendered_i, eng.doc->background) == 0 && uploaded_points == eng.doc->point_count) {
+    if (renderer_frame(rendered.data, rendered_i, eng.doc->background) == 0 && uploaded_points == eng.doc->points.count) {
         dirty = false;
         return true;
     }
@@ -272,27 +348,35 @@ void engine_set_background(uint32_t r, uint32_t g, uint32_t b) {
 }
 
 int engine_undo(void) {
-    if (session.undo_sp == 0 || session.stroke_open) return -1;
-    uint32_t undone = session.undo[--session.undo_sp];
-    eng.doc->strokes[undone].undo_len++;
+    if (session.undo.count == 0 || session.stroke_open) return -1;
+    if (!sprawl_reserve_u32(&session.redo, session.redo.count+1)) {
+        // If we can't push to the redo stack, don't undo
+        return -1;
+    }
+    uint32_t undone = session.undo.data[--session.undo.count];
+    eng.doc->strokes.data[undone].undo_len++;
 
-    session.redo[session.redo_sp++] = undone;
+    session.redo.data[session.redo.count++] = undone;
 
     doc_revision++;
     dirty = true;
-    return session.undo_sp;
+    return session.undo.count;
 }
 
 int engine_redo(void) {
-    if (session.redo_sp == 0 || session.stroke_open) return -1;
-    uint32_t redone = session.redo[--session.redo_sp];
-    eng.doc->strokes[redone].undo_len++;
+    if (session.redo.count == 0 || session.stroke_open) return -1;
+    if (!sprawl_reserve_u32(&session.undo, session.undo.count+1)) {
+        // If we can't push to the undo stack, don't redo
+        return -1;
+    }
+    uint32_t redone = session.redo.data[--session.redo.count];
+    eng.doc->strokes.data[redone].undo_len++;
 
-    session.undo[session.undo_sp++] = redone;
+    session.undo.data[session.undo.count++] = redone;
 
     doc_revision++;
     dirty = true;
-    return session.redo_sp;
+    return session.redo.count;
 }
 
 void engine_save_begin(void) {
@@ -330,8 +414,8 @@ bool engine_load_end(void) {
 
         new_session();
        
-        if (eng.doc->stroke_count > 0) {
-            eng.doc->max_z = eng.doc->strokes[eng.doc->stroke_count-1].z;
+        if (eng.doc->strokes.count > 0) {
+            eng.doc->max_z = eng.doc->strokes.data[eng.doc->strokes.count-1].z;
         } else {
             eng.doc->max_z = 0;
         }
@@ -404,8 +488,8 @@ void engine_new_document(void) {
     random_bytes_used = 0;
     eng.doc->id[0] = read_random_u64();
     eng.doc->id[1] = read_random_u64();
-    eng.doc->stroke_count = 0;
-    eng.doc->point_count = 0;
+    eng.doc->strokes.count = 0;
+    eng.doc->points.count = 0;
     eng.doc->max_z = 0;
 
     new_session();
@@ -421,9 +505,9 @@ void engine_new_document(void) {
     dirty = true;
 }
 
-uint32_t engine_point_count(void) { return eng.doc->point_count; }
-uint32_t engine_stroke_count(void) { return eng.doc->stroke_count; }
-uint32_t engine_point_max(void) { return MAX_POINTS; }
-uint32_t engine_stroke_max(void) { return MAX_STROKES; }
+uint32_t engine_point_count(void) { return eng.doc->points.count; }
+uint32_t engine_stroke_count(void) { return eng.doc->strokes.count; }
+uint32_t engine_point_max(void) { return eng.doc->points.cap; }
+uint32_t engine_stroke_max(void) { return eng.doc->strokes.cap; }
 uint32_t engine_io_capacity(void) { return IO_CAPACITY; }
 uint32_t engine_random_capacity(void) { return MAX_RANDOM_BYTES; }

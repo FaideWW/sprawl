@@ -53,23 +53,37 @@ typedef struct {
 } sprawl_viewport;
 
 typedef struct {
+    sprawl_stroke *data;
+    uint32_t count;
+    uint32_t cap;
+} sprawl_stroke_array;
+
+typedef struct {
+    sprawl_point *data;
+    uint32_t count;
+    uint32_t cap;
+} sprawl_point_array;
+
+typedef struct {
     uint64_t id[2];
-    uint32_t stroke_count;
-    sprawl_stroke strokes[MAX_STROKES];
-    uint32_t point_count;
-    sprawl_point points[MAX_POINTS];
+    sprawl_stroke_array strokes;
+    sprawl_point_array points;
     float background[4];
     uint64_t max_z;
     uint32_t revision;
 } sprawl_document;
 
 typedef struct {
+    uint32_t *data;
+    uint32_t count;
+    uint32_t cap;
+} u32_array;
+
+typedef struct {
     uint64_t id;
     uint32_t next_seq;
-    uint32_t undo_sp;
-    uint32_t undo[MAX_STROKES];
-    uint32_t redo_sp;
-    uint32_t redo[MAX_STROKES];
+    u32_array undo;
+    u32_array redo;
     bool stroke_open;
     float color[4];
 } sprawl_session;
@@ -78,7 +92,17 @@ typedef struct {
     sprawl_document *doc;
 } sprawl_engine;
 
+typedef struct {
+    sprawl_rendered_stroke *data;
+    uint32_t count;
+    uint32_t cap;
+} sprawl_rendered_stroke_array;
+
 int sprawl_compare_id(sprawl_id a, sprawl_id b);
+bool sprawl_reserve_strokes(sprawl_stroke_array *a, uint32_t needed);
+bool sprawl_reserve_points(sprawl_point_array *a, uint32_t needed);
+bool reserve_rendered_strokes(sprawl_rendered_stroke_array *a, uint32_t needed);
+bool sprawl_reserve_u32(u32_array *a, uint32_t needed);
 
 #endif
 

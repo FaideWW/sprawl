@@ -113,10 +113,10 @@ static const uint8_t *read_f64(const uint8_t *p, double *f) {
 
 void doc_encoder_begin(sprawl_doc_encoder *enc, const sprawl_document *doc) {
     enc->doc = doc;
-    enc->stroke_count = doc->stroke_count;
+    enc->stroke_count = doc->strokes.count;
     uint32_t point_count = 0;
-    for (uint32_t i = 0; i < doc->stroke_count; i++) {
-        point_count += doc->strokes[i].points_count;
+    for (uint32_t i = 0; i < doc->strokes.count; i++) {
+        point_count += doc->strokes.data[i].points_count;
     }
     enc->point_count = point_count;
     enc->stage = SprawlCodecStage_Header;
@@ -190,21 +190,21 @@ uint32_t doc_encoder_next(sprawl_doc_encoder *enc, uint8_t *buf, uint32_t cap) {
                     break;
                 }
                 if (end - p < STROKE_SIZE) return p - buf;
-                p = write_stroke(p, &d->strokes[enc->strokes_written++]);
+                p = write_stroke(p, &d->strokes.data[enc->strokes_written++]);
             } break;
             case SprawlCodecStage_Points: {
                 if (enc->point_stroke_cursor == enc->stroke_count) {
                     enc->stage = SprawlCodecStage_Done;
                     break;
                 }
-                const sprawl_stroke *s = &d->strokes[enc->point_stroke_cursor];
+                const sprawl_stroke *s = &d->strokes.data[enc->point_stroke_cursor];
                 if (enc->point_point_cursor == s->points_count) {
                     enc->point_stroke_cursor++;
                     enc->point_point_cursor = 0;
                     break;
                 }
                 if (end - p < POINT_SIZE) return p - buf;
-                p = write_point(p, &d->points[s->first_point + enc->point_point_cursor++]);
+                p = write_point(p, &d->points.data[s->first_point + enc->point_point_cursor++]);
             } break;
             case SprawlCodecStage_Done: {
                 return p - buf;
@@ -335,17 +335,11 @@ uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uin
                 p = read_u64(p, &dec->doc->id[0]);
                 p = read_u64(p, &dec->doc->id[1]);
                 
-                p = read_u32(p, &dec->doc->stroke_count);
-                if (dec->doc->stroke_count > MAX_STROKES) {
-                    dec->error = SprawlDecodeError_TooManyEntries;
-                    return p - buf;
-                }
-                
-                p = read_u32(p, &dec->doc->point_count);
-                if (dec->doc->point_count > MAX_POINTS) {
-                    dec->error = SprawlDecodeError_TooManyEntries;
-                    return p - buf;
-                }
+                uint32_t requested_strokes;
+                p = read_u32(p, &requested_strokes);
+               
+                uint32_t requested_points;
+                p = read_u32(p, &requested_points);
 
                 p = read_f32(p, &dec->doc->background[0]);
                 p = read_f32(p, &dec->doc->background[1]);
@@ -361,20 +355,31 @@ uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uin
                 }
 
                 uint64_t expected = HEADER_SIZE + 
-                    ((uint64_t)dec->doc->stroke_count * STROKE_SIZE) +
-                    ((uint64_t)dec->doc->point_count * POINT_SIZE);
+                    ((uint64_t)requested_strokes * STROKE_SIZE) +
+                    ((uint64_t)requested_points * POINT_SIZE);
 
                 if (expected != dec->total_bytes) {
                     dec->error = SprawlDecodeError_SizeMismatch;
                     return p - buf;
                 }
+                
+                if (!sprawl_reserve_strokes(&dec->doc->strokes, requested_strokes)) {
+                    dec->error = SprawlDecodeError_TooManyEntries;
+                    return p - buf;
+                }
+                dec->doc->strokes.count = requested_strokes;
+                if (!sprawl_reserve_points(&dec->doc->points, requested_points)) {
+                    dec->error = SprawlDecodeError_TooManyEntries;
+                    return p - buf;
+                }
+                dec->doc->points.count = requested_points;
 
                 assert(p - start == HEADER_SIZE);
                 dec->stage = SprawlCodecStage_Strokes;
             } break;
             case SprawlCodecStage_Strokes: {
-                if (dec->strokes_read == dec->doc->stroke_count) {
-                    if (dec->points_head != dec->doc->point_count) {
+                if (dec->strokes_read == dec->doc->strokes.count) {
+                    if (dec->points_head != dec->doc->points.count) {
                         dec->error = SprawlDecodeError_CountMismatch;
                         return p - buf;
                     }
@@ -382,8 +387,8 @@ uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uin
                     break;
                 }
                 if (end - p < STROKE_SIZE) return p - buf;
-                p = read_stroke(p, &d->strokes[dec->strokes_read++], &dec->points_head);
-                sprawl_stroke *s = &d->strokes[dec->strokes_read - 1];
+                p = read_stroke(p, &d->strokes.data[dec->strokes_read++], &dec->points_head);
+                sprawl_stroke *s = &d->strokes.data[dec->strokes_read - 1];
                 SprawlDecodeError err = validate_stroke(s);
                 if (err != SprawlDecodeError_Success) {
                     dec->error = err;
@@ -406,7 +411,7 @@ uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uin
                     }
                 }
 
-                if (s->points_count > MAX_POINTS - dec->points_head) {
+                if (s->points_count > dec->doc->points.count - dec->points_head) {
                     dec->error = SprawlDecodeError_TooManyEntries;
                     return p - buf;
                 }
@@ -416,19 +421,19 @@ uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uin
                 dec->last_stroke_id = s->id;
             } break;
             case SprawlCodecStage_Points: {
-                if (dec->point_stroke_cursor == dec->doc->stroke_count) {
+                if (dec->point_stroke_cursor == dec->doc->strokes.count) {
                     dec->stage = SprawlCodecStage_Done;
                     break;
                 }
-                const sprawl_stroke *s = &d->strokes[dec->point_stroke_cursor];
+                const sprawl_stroke *s = &d->strokes.data[dec->point_stroke_cursor];
                 if (dec->point_point_cursor == s->points_count) {
                     dec->point_stroke_cursor++;
                     dec->point_point_cursor = 0;
                     break;
                 }
                 if (end - p < POINT_SIZE) return p - buf;
-                p = read_point(p, &d->points[s->first_point + dec->point_point_cursor++]);
-                SprawlDecodeError err = validate_point(&d->points[s->first_point + dec->point_point_cursor - 1]);
+                p = read_point(p, &d->points.data[s->first_point + dec->point_point_cursor++]);
+                SprawlDecodeError err = validate_point(&d->points.data[s->first_point + dec->point_point_cursor - 1]);
                 if (err != SprawlDecodeError_Success) {
                     dec->error = err;
                     return p - buf;
@@ -447,8 +452,8 @@ bool doc_decoder_end(sprawl_doc_decoder *dec) {
     return (
         dec->error == SprawlDecodeError_Success &&
         dec->stage == SprawlCodecStage_Done &&
-        dec->strokes_read == dec->doc->stroke_count && 
-        dec->points_head == dec->doc->point_count
+        dec->strokes_read == dec->doc->strokes.count && 
+        dec->points_head == dec->doc->points.count
     );
 }
 

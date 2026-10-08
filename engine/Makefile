@@ -60,10 +60,10 @@ SRC_DIR := src
 BUILD_DIR := build
 OBJ_DIR := $(BUILD_DIR)/obj
 GEN_DIR := $(BUILD_DIR)/gen
-WASM := $(OUT)/engine.js
+WASM := $(OUT)/engine-wasm.js
 
 EMCCFLAGS := -O2 -Iinclude -std=c99
-LDFLAGS := -sMODULARIZE -sEXPORT_ES6 -sIGNORE_MISSING_MAIN -sENVIRONMENT=web -sFILESYSTEM=0 -sEXPORTED_FUNCTIONS=$(EXPORTS) -sEXPORTED_RUNTIME_METHODS=$(RUNTIME_EXPORTS)
+LDFLAGS := -sALLOW_MEMORY_GROWTH -sMODULARIZE -sEXPORT_ES6 -sIGNORE_MISSING_MAIN -sENVIRONMENT=web -sFILESYSTEM=0 -sEXPORTED_FUNCTIONS=$(EXPORTS) -sEXPORTED_RUNTIME_METHODS=$(RUNTIME_EXPORTS)
 
 
 SOURCES := $(shell find $(SRC_DIR) -type f -name '*.c')
@@ -73,7 +73,7 @@ include ../backend/$(BACKEND)/backend.mk
 OBJ := $(addprefix $(OBJ_DIR)/, $(addsuffix .o,$(SOURCES)))
 
 clean: 
-	$(RM) -r build/ $(OUT)/engine.js $(OUT)/engine.wasm
+	$(RM) -r build/ $(OUT)/engine-wasm.js $(OUT)/engine.wasm
 
 all: $(WASM)
 
