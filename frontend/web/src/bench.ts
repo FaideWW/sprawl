@@ -1,4 +1,4 @@
-import type { EngineModule } from "./engine.js";
+import type { EngineModule } from "./engine-wasm.js";
 
 export interface Bench {
     drawFrames: number;
@@ -7,7 +7,7 @@ export interface Bench {
     rng: () => number;
     localStorageKey: string;
     frame: number;
-    phase: "draw" | "view";
+    phase: "draw" | "view" | "done";
     cpuTimes: number[];
     gpuTimes: number[];
     lastSample: number[] | null;
@@ -82,6 +82,7 @@ export function createBench(
             return result;
         },
         step() {
+            if (this.phase === "done") return false;
             this.frame++;
             if (this.phase === "draw") {
                 if (this.frame % 60 === 1) {
@@ -202,6 +203,7 @@ cpu_med ${report.cpuMed.toPrecision(2)}ms   cpu_p95 ${report.cpuP95.toPrecision(
         },
         finish() {
             this.report(this.phase);
+            this.phase = "done";
         },
     };
 }

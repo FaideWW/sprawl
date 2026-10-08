@@ -1,5 +1,4 @@
 export interface EngineModule {
-    _add(a: number, b: number): number;
     _engine_init(w: number, h: number): void;
     _engine_new_document(): void;
     _engine_begin_stroke(nowMs: number): number;

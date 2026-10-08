@@ -210,7 +210,7 @@ function handleBeginStroke(e: PointerEvent) {
 }
 
 document.addEventListener("visibilitychange", (e) => {
-    if (document.hidden) {
+    if (document.hidden && !bench) {
         enqueue(save);
     }
     lastFrameTime = e.timeStamp;
@@ -369,6 +369,7 @@ canvas.addEventListener("lostpointercapture", (e) => {
 });
 
 newDocButton.addEventListener("click", async () => {
+    if (bench) return;
     openDocument(null);
 });
 
@@ -426,9 +427,11 @@ function renderStep(now: number) {
         pendingResize = null;
     }
     if (bench?.step()) {
-        openDocument(preBenchDocId, { discardCurrent: true }).then(() => {
-            bench = null;
-        });
+        openDocument(preBenchDocId, { discardCurrent: true })
+            .catch(() => openDocument(null, { discardCurrent: true }))
+            .finally(() => {
+                bench = null;
+            });
     }
 
     const engineFrameStart = performance.now();
@@ -485,7 +488,9 @@ function debounce(fn: () => unknown, timeout: number) {
         window.clearTimeout(debouncedSaveHandle);
     }
 
-    debouncedSaveHandle = window.setTimeout(fn, timeout);
+    debouncedSaveHandle = window.setTimeout(() => {
+        if (!bench) return fn();
+    }, timeout);
 }
 
 async function sprawlInit() {

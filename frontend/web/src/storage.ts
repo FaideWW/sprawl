@@ -1,5 +1,4 @@
 import { engine } from "./engine.ts";
-import { parseHex } from "./shared.ts";
 
 export const LAST_DOC_KEY = `sprawl:lastDocId`;
 const ioBuffer = engine._engine_io_buffer();
@@ -54,12 +53,12 @@ function decode(buf: ArrayBuffer): void {
     const sizeLo = Number(fsBigInt & 0xffffffffn);
     const sizeHi = Number(fsBigInt >> 32n);
 
-    const heap = engine.HEAPU8;
-
+    fillRandomBuffer();
     engine._engine_load_begin(sizeLo, sizeHi);
     let bytesLoaded = 0;
     const copySrc = new Uint8Array(buf);
     while (bytesLoaded < fileSize) {
+        const heap = engine.HEAPU8;
         const bytesToRead = Math.min(fileSize - bytesLoaded, ioCapacity);
         heap.set(
             copySrc.subarray(bytesLoaded, bytesLoaded + bytesToRead),
@@ -134,15 +133,15 @@ export async function save() {
 }
 
 export interface OpenOpts {
-    transient: boolean;
+    discardCurrent: boolean;
 }
 
 export async function open(
     id: string | null,
-    opts: OpenOpts = { transient: false },
+    opts: OpenOpts = { discardCurrent: false },
 ) {
     const buf = id ? await readFile(id) : null;
-    const old = opts.transient ? null : encodeIfChanged();
+    const old = opts.discardCurrent ? null : encodeIfChanged();
     try {
         if (buf) {
             decode(buf);

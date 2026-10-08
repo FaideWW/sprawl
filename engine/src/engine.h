@@ -70,7 +70,6 @@ typedef struct {
     sprawl_point_array points;
     float background[4];
     uint64_t max_z;
-    uint32_t revision;
 } sprawl_document;
 
 typedef struct {

@@ -265,8 +265,8 @@ static SprawlDecodeError validate_stroke(sprawl_stroke *s) {
         !isfinite(s->scale) || 
         !isfinite(s->radius)) {
         fprintf(stderr, "stroke (%llu,%u).origin (%f,%f)\n",s->id.session, s->id.seq, s->origin[0], s->origin[1]);
-        fprintf(stderr, "stroke (%llu,%u).scale (%f,%f)\n",s->id.session, s->id.seq, s->origin[0], s->scale);
-        fprintf(stderr, "stroke (%llu,%u).radius (%f,%f)\n",s->id.session, s->id.seq, s->origin[0], s->radius);
+        fprintf(stderr, "stroke (%llu,%u).scale (%f)\n",s->id.session, s->id.seq, s->scale);
+        fprintf(stderr, "stroke (%llu,%u).radius (%f)\n",s->id.session, s->id.seq, s->radius);
         return SprawlDecodeError_InvalidValue;
     }
 
@@ -275,8 +275,8 @@ static SprawlDecodeError validate_stroke(sprawl_stroke *s) {
 
 static SprawlDecodeError validate_point(sprawl_point *p) {
     if (p->p < 0.0 || p->p > 1.0) {
-        return SprawlDecodeError_InvalidValue;
         fprintf(stderr, "point.p (%f)\n",p->p);
+        return SprawlDecodeError_InvalidValue;
     }
 
     if (!isfinite(p->x) || 
