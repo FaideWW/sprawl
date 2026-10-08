@@ -12,7 +12,7 @@ endif
 
 EXPORTS := "[ \
 		   '_engine_init', \
-		   '_debug_engine_clear', \
+		   '_engine_new_document', \
 		   '_engine_begin_stroke', \
 		   '_engine_append_samples', \
 		   '_engine_end_stroke', \
@@ -26,13 +26,25 @@ EXPORTS := "[ \
 		   '_engine_set_background', \
 		   '_engine_undo', \
 		   '_engine_redo', \
+		   '_engine_save_begin', \
+		   '_engine_save_next', \
+		   '_engine_load_begin', \
+		   '_engine_load_next', \
+		   '_engine_load_end', \
+		   '_engine_doc_id', \
+		   '_engine_doc_revision', \
+		   '_engine_background_rgb', \
 		   '_engine_gpu_time_ms', \
 		   '_engine_target_buffer', \
 		   '_engine_sample_buffer', \
+		   '_engine_random_buffer', \
+		   '_engine_io_buffer', \
 		   '_engine_point_count', \
 		   '_engine_stroke_count', \
 		   '_engine_point_max', \
-		   '_engine_stroke_max' \
+		   '_engine_stroke_max', \
+		   '_engine_io_capacity', \
+		   '_engine_random_capacity' \
 		   ]"
 
 RUNTIME_EXPORTS := "[ \

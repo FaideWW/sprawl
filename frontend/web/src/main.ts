@@ -26,14 +26,22 @@ interface CanvasDims {
 
 type PointerMode = "none" | "drawing" | "panning";
 
+const SAMPLE_FLOATS = 4;
+const MAX_SAMPLES = 256;
+const ZOOM_FACTOR = 0.002;
+const STATS_UPDATES_PER_SEC = 4;
+const LOCALSTORAGE_KEY_PREFIX = "sprawl:";
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const canvas = app.querySelector<HTMLCanvasElement>("#canvas")!;
 const stats = app.querySelector<HTMLDivElement>("#stats")!;
 const strokeColor = app.querySelector<HTMLInputElement>("#stroke-color")!;
 const bgColor = app.querySelector<HTMLInputElement>("#bg-color")!;
 const engine = await EngineModule();
-const sample_buffer = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
-const selector_buffer = engine._engine_target_buffer();
+const sampleBuffer = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
+const selectorBuffer = engine._engine_target_buffer();
+const randomBuffer = engine._engine_random_buffer();
+const ioBuffer = engine._engine_io_buffer();
 
 const frametimeBuffer = createTimingBuffer(30);
 const engineFrametimeBuffer = createTimingBuffer(30);
@@ -48,11 +56,6 @@ const canvasDims: CanvasDims = {
     sx: 1,
 };
 
-const SAMPLE_FLOATS = 4;
-const MAX_SAMPLES = 256;
-const ZOOM_FACTOR = 0.002;
-const STATS_UPDATES_PER_SEC = 4;
-
 const pointMax = engine._engine_point_max();
 const strokeMax = engine._engine_stroke_max();
 
@@ -65,6 +68,11 @@ let strokeStartTime: number = 0;
 let maxReached = false;
 let framePresented = false;
 let lastStatUpdate = 0;
+let debouncedWriteHandle = -1;
+let saving = false;
+let savePending = false;
+let preBenchDocId: string | null = null;
+let lastSavedRevision = -1;
 
 let pendingResize: { w: number; h: number } | null = null;
 
@@ -93,7 +101,7 @@ function appendEvents(events: PointerEvent[]): number {
             const e = chunk[j];
             if (e === undefined) continue;
 
-            const offset = sample_buffer + count * SAMPLE_FLOATS;
+            const offset = sampleBuffer + count * SAMPLE_FLOATS;
             heap[offset] = (e.clientX - canvasDims.left) * canvasDims.sx;
             heap[offset + 1] = (e.clientY - canvasDims.top) * canvasDims.sx;
             heap[offset + 2] = e.pressure;
@@ -113,7 +121,7 @@ function appendEvents(events: PointerEvent[]): number {
 function writeSamples(samples: number[][]) {
     const heap = engine.HEAPF32;
     for (let i = 0; i < samples.length; i++) {
-        const offset = sample_buffer + i * SAMPLE_FLOATS;
+        const offset = sampleBuffer + i * SAMPLE_FLOATS;
         heap[offset] =
             ((samples[i]?.[0] ?? 0) - canvasDims.left) * canvasDims.sx;
         heap[offset + 1] =
@@ -129,11 +137,14 @@ window.bench = (
     viewFrames: number,
     setBaseline = false,
 ) => {
-    if (bench) return;
+    if (bench || saving) return;
+    preBenchDocId = getCurrentDocId();
+    saveOPFSDocument();
     maxReached = false;
     pointerMode = "none";
-    engine._debug_engine_clear();
-    engine._engine_set_camera(0, 0, 1);
+    fillRandomBuffer();
+
+    engine._engine_new_document();
     bench = createBench(
         engine,
         writeSamples,
@@ -201,6 +212,9 @@ function handleBeginStroke(e: PointerEvent) {
 }
 
 document.addEventListener("visibilitychange", (e) => {
+    if (document.hidden) {
+        saveOPFSDocument();
+    }
     lastFrameTime = e.timeStamp;
 });
 
@@ -245,8 +259,10 @@ window.addEventListener("keydown", (e) => {
                 e.preventDefault();
                 if (e.shiftKey) {
                     engine._engine_redo();
+                    enqueueSave();
                 } else {
                     engine._engine_undo();
+                    enqueueSave();
                 }
             }
             break;
@@ -260,6 +276,7 @@ window.addEventListener("keydown", (e) => {
                     return;
                 e.preventDefault();
                 engine._engine_redo();
+                enqueueSave();
             }
             break;
     }
@@ -329,7 +346,10 @@ canvas.addEventListener("pointermove", (e) => {
 canvas.addEventListener("pointerup", (e) => {
     if (bench) return;
     if (e.pointerId !== activePointerId) return;
-    if (pointerMode === "drawing") engine._engine_end_stroke();
+    if (pointerMode === "drawing") {
+        engine._engine_end_stroke();
+        enqueueSave();
+    }
     pointerMode = "none";
     activePointerId = null;
 });
@@ -368,6 +388,7 @@ bgColor.addEventListener("input", () => {
     if (bench) return;
     const value = bgColor.value;
     engine._engine_set_background(...parseHex(value));
+    enqueueSave();
 });
 
 function updateStats() {
@@ -410,6 +431,12 @@ function renderStep(now: number) {
     }
     if (bench?.step()) {
         bench = null;
+        if (preBenchDocId !== null) {
+            Promise.resolve(loadOPFSDocument(preBenchDocId)).catch((e) => {
+                console.error(e);
+                createNewDocument();
+            });
+        }
     }
 
     const engineFrameStart = performance.now();
@@ -442,13 +469,153 @@ function renderStep(now: number) {
     requestAnimationFrame(renderStep);
 }
 
-function sprawl_init() {
-    const values = crypto.getRandomValues(new Uint32Array(2));
-    engine.stringToUTF8("#canvas", selector_buffer, 256);
-    engine._engine_init(canvas.width, canvas.height, values[0]!, values[1]!);
+function fillRandomBuffer() {
+    const values = crypto.getRandomValues(
+        new Uint8Array(engine._engine_random_capacity()),
+    );
+    const heap = engine.HEAPU8;
+    for (let i = 0; i < values.length; i++) {
+        heap[randomBuffer + i] = values[i]!;
+    }
+}
+
+function createNewDocument() {
+    fillRandomBuffer();
+    engine._engine_new_document();
     engine._engine_set_color(...parseHex(strokeColor.value));
     engine._engine_set_background(...parseHex(bgColor.value));
+    lastSavedRevision = engine._engine_doc_revision();
+}
+
+async function loadOPFSDocument(docId: string): Promise<void> {
+    const opfsRoot = await navigator.storage.getDirectory();
+    const fileHandle = await opfsRoot.getFileHandle(`${docId}.sprawl`);
+    const file = await fileHandle.getFile();
+    const fileBuf = await file.arrayBuffer();
+
+    const ioCapacity = engine._engine_io_capacity();
+
+    const fsBigInt = BigInt(file.size);
+    const sizeLo = Number(fsBigInt & 0xffffffffn);
+    const sizeHi = Number(fsBigInt >> 32n);
+
+    const heap = engine.HEAPU8;
+
+    engine._engine_load_begin(sizeLo, sizeHi);
+    let bytesLoaded = 0;
+    const copySrc = new Uint8Array(fileBuf);
+    while (bytesLoaded < file.size) {
+        const bytesToRead = Math.min(file.size - bytesLoaded, ioCapacity);
+        heap.set(
+            copySrc.subarray(bytesLoaded, bytesLoaded + bytesToRead),
+            ioBuffer,
+        );
+        const bytesRead = engine._engine_load_next(bytesToRead);
+
+        if (bytesRead <= 0) {
+            break;
+        }
+
+        bytesLoaded += bytesRead;
+    }
+
+    const success = engine._engine_load_end();
+    if (success !== 1) {
+        throw new Error("load failed");
+    }
+
+    // sync ui and engine pen and background colors
+    engine._engine_set_color(...parseHex(strokeColor.value));
+    const engineBGColor = engine._engine_background_rgb();
+    bgColor.value = "#" + engineBGColor.toString(16).padStart(6, "0");
+    lastSavedRevision = engine._engine_doc_revision();
+}
+
+function getCurrentDocId(): string {
+    // FIXME: is there a better way to do this?
+    const docIdBuf = engine._engine_doc_id();
+    const heap = engine.HEAPU8;
+    let docId = "";
+    for (let i = 0; i < 16; i++) {
+        docId += heap[docIdBuf + i]!.toString(16).padStart(2, "0");
+    }
+    return docId;
+}
+
+async function saveOPFSDocument() {
+    if (bench) return;
+    if (saving) {
+        savePending = true;
+        return;
+    }
+
+    const revision = engine._engine_doc_revision();
+    if (revision === lastSavedRevision) return;
+
+    saving = true;
+    try {
+        const docId = getCurrentDocId();
+        const heap = engine.HEAPU8;
+
+        const fileChunks: Uint8Array<ArrayBuffer>[] = [];
+
+        engine._engine_save_begin();
+        let lastBytesWritten = 0;
+        do {
+            lastBytesWritten = engine._engine_save_next();
+            fileChunks.push(heap.slice(ioBuffer, ioBuffer + lastBytesWritten));
+        } while (lastBytesWritten > 0);
+
+        const opfsRoot = await navigator.storage.getDirectory();
+        const fileHandle = await opfsRoot.getFileHandle(`${docId}.sprawl`, {
+            create: true,
+        });
+        const w = await fileHandle.createWritable();
+
+        for (let i = 0; i < fileChunks.length; i++) {
+            await w.write(fileChunks[i]!);
+        }
+
+        await w.close();
+
+        localStorage.setItem(LOCALSTORAGE_KEY_PREFIX + "lastDocId", docId);
+        lastSavedRevision = revision;
+    } finally {
+        saving = false;
+        if (savePending) {
+            savePending = false;
+            saveOPFSDocument();
+        }
+    }
+}
+
+function enqueueSave() {
+    if (debouncedWriteHandle >= 0) {
+        window.clearTimeout(debouncedWriteHandle);
+    }
+    debouncedWriteHandle = window.setTimeout(saveOPFSDocument, 1000);
+}
+
+async function sprawlInit() {
+    engine.stringToUTF8("#canvas", selectorBuffer, 256);
+    engine._engine_init(canvas.width, canvas.height);
+
+    const lastDocIdKey = LOCALSTORAGE_KEY_PREFIX + "lastDocId";
+    const lastDocId = localStorage.getItem(lastDocIdKey);
+
+    if (lastDocId === null) {
+        createNewDocument();
+    } else {
+        // FIXME: this function runs asynchronously; do we need
+        // a loading state?
+        try {
+            await loadOPFSDocument(lastDocId);
+        } catch (e) {
+            console.error(e);
+            createNewDocument();
+        }
+    }
     requestAnimationFrame(renderStep);
 }
 
-sprawl_init();
+await sprawlInit();

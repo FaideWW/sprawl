@@ -1,5 +1,5 @@
-#ifndef ARENA_H_
-#define ARENA_H_
+#ifndef SPRAWL_ARENA_H_
+#define SPRAWL_ARENA_H_
 
 #include <stddef.h>
 typedef struct {

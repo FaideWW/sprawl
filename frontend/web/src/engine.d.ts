@@ -1,12 +1,7 @@
 export interface EngineModule {
     _add(a: number, b: number): number;
-    _engine_init(
-        w: number,
-        h: number,
-        sessionHi: number,
-        sessionLo: number,
-    ): void;
-    _debug_engine_clear(): void;
+    _engine_init(w: number, h: number): void;
+    _engine_new_document(): void;
     _engine_begin_stroke(nowMs: number): number;
     _engine_append_samples(sampleCount: number): number;
     _engine_end_stroke(): void;
@@ -20,13 +15,25 @@ export interface EngineModule {
     _engine_set_background(r: number, g: number, b: number): void;
     _engine_undo(): number;
     _engine_redo(): number;
+    _engine_save_begin(): void;
+    _engine_save_next(): number;
+    _engine_load_begin(totalLo: number, totalHi: number): void;
+    _engine_load_next(n: number): number;
+    _engine_load_end(): number;
+    _engine_doc_id(): number;
+    _engine_doc_revision(): number;
+    _engine_background_rgb(): number;
     _engine_gpu_time_ms(): number;
     _engine_target_buffer(): number;
     _engine_sample_buffer(): number;
+    _engine_io_buffer(): number;
+    _engine_random_buffer(): number;
     _engine_point_count(): number;
     _engine_stroke_count(): number;
     _engine_point_max(): number;
     _engine_stroke_max(): number;
+    _engine_io_capacity(): number;
+    _engine_random_capacity(): number;
     stringToUTF8(str: string, bufptr: number, maxBytesToWrite: number): number;
     HEAPU8: Uint8Array;
     HEAPF32: Float32Array;
