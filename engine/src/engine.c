@@ -26,9 +26,11 @@ static sprawl_sample sample_buf[MAX_SAMPLES];
 static size_t random_bytes_used;
 static uint8_t random_buf[MAX_RANDOM_BYTES];
 static uint8_t io_buf[IO_CAPACITY];
+static uint8_t title_buf[MAX_TITLE_LEN + 1];
 
 // static sprawl_arena arena;
 
+static sprawl_doc_header listed;
 static sprawl_doc_decoder decoder;
 static sprawl_doc_encoder encoder;
 
@@ -263,7 +265,8 @@ void engine_zoom_at(float sx, float sy, double f) {
     dirty = true;
 }
 
-void engine_set_camera(float wx, float wy, double zoom) {
+void engine_set_camera(double wx, double wy, double zoom) {
+    if (!isfinite(wx) || !isfinite(wy) || !isfinite(zoom)) return;
     camera.center[0] = wx;
     camera.center[1] = wy;
 
@@ -273,12 +276,97 @@ void engine_set_camera(float wx, float wy, double zoom) {
     dirty = true;
 }
 
+double engine_camera_x(void) {
+    return camera.center[0];
+}
+
+double engine_camera_y(void) {
+    return camera.center[1];
+}
+
+double engine_camera_zoom(void) {
+    return camera.zoom;
+}
+
 void engine_resize(uint32_t w, uint32_t h) {
     viewport.w = w;
     viewport.h = h;
     renderer_resize(viewport.w, viewport.h);
     
     dirty = true;
+}
+
+uint8_t engine_title(void) {
+    memcpy(title_buf, eng.doc->title, eng.doc->title_len);
+    return eng.doc->title_len;
+}
+
+static bool byte_in_range(uint8_t b, uint8_t min, uint8_t max) {
+    assert(min <= max);
+    return (b >= min && b <= max);
+}
+
+ValidateTitleResult validate_title(const uint8_t *buf, uint32_t len, uint32_t cap) {
+    if (len > cap) return ValidateTitleResult_TooLong;
+
+    for (uint32_t i = 0; i < len; i++) {
+        uint8_t lead_byte = buf[i];
+        uint8_t sequence_len = 1;
+        uint8_t byte2_min = 0;
+        uint8_t byte2_max = 0;
+        if (byte_in_range(lead_byte, 0x00, 0x7F)) {
+            // no-op
+        } else if (byte_in_range(lead_byte, 0xC2, 0xDF)) {
+            sequence_len = 2;
+            byte2_min = 0x80;
+            byte2_max = 0xBF;
+        } else if (lead_byte == 0xE0) {
+            sequence_len = 3;
+            byte2_min = 0xA0;
+            byte2_max = 0xBF;
+        } else if (byte_in_range(lead_byte, 0xE1, 0xEC) || byte_in_range(lead_byte, 0xEE, 0xEF)) {
+            sequence_len = 3;
+            byte2_min = 0x80;
+            byte2_max = 0xBF;
+        } else if (lead_byte == 0xED) {
+            sequence_len = 3;
+            byte2_min = 0x80;
+            byte2_max = 0x9F;
+        } else if (lead_byte == 0xF0) {
+            sequence_len = 4;
+            byte2_min = 0x90;
+            byte2_max = 0xBF;
+        } else if (byte_in_range(lead_byte, 0xF1, 0xF3)) {
+            sequence_len = 4;
+            byte2_min = 0x80;
+            byte2_max = 0xBF;
+        } else if (lead_byte == 0xF4) {
+            sequence_len = 4;
+            byte2_min = 0x80;
+            byte2_max = 0x8F;
+        } else {
+            return ValidateTitleResult_InvalidUTF8;
+        }
+
+        if (sequence_len > 1) {
+            if (i + sequence_len > len) return ValidateTitleResult_InvalidUTF8;
+            if (!byte_in_range(buf[i+1], byte2_min, byte2_max)) return ValidateTitleResult_InvalidUTF8;
+            for (uint8_t j = 2; j < sequence_len; j++) {
+                if (!byte_in_range(buf[i+j], 0x80, 0xBF)) return ValidateTitleResult_InvalidUTF8;
+            }
+            i += sequence_len-1;
+        }
+    }
+    return ValidateTitleResult_Success;
+}
+
+ValidateTitleResult engine_set_title(uint32_t len) {
+    ValidateTitleResult validation_result = validate_title(title_buf, len, MAX_TITLE_LEN);
+    if (validation_result != ValidateTitleResult_Success) return validation_result;
+    memcpy(eng.doc->title, title_buf, len);
+    eng.doc->title_len = len;
+    doc_revision++;
+    return ValidateTitleResult_Success;
 }
 
 bool engine_frame(void) {
@@ -379,6 +467,22 @@ int engine_redo(void) {
     return session.redo.count;
 }
 
+SprawlDecodeError engine_read_header(uint32_t n, uint32_t total_lo, uint32_t total_hi) {
+    if (n < HEADER_SIZE) return SprawlDecodeError_SizeMismatch;
+    uint64_t size = ((uint64_t)total_hi << 32) + total_lo;
+    SprawlDecodeError result = doc_read_header(io_buf, size, &listed);
+    if (result != SprawlDecodeError_Success) {
+        listed = (sprawl_doc_header){0};
+    }
+
+    return result;
+}
+
+uint8_t engine_header_title(void) {
+    memcpy(title_buf, listed.title, listed.title_len);
+    return listed.title_len;
+}
+
 void engine_save_begin(void) {
    doc_encoder_begin(&encoder, eng.doc);
 }
@@ -422,6 +526,11 @@ bool engine_load_end(void) {
      
         doc_revision = 0;
         uploaded_points = 0;
+
+        camera.zoom = 1.0;
+        camera.center[0] = 0.0;
+        camera.center[1] = 0.0;
+
         dirty = true;
     }
 
@@ -469,6 +578,10 @@ uint8_t *engine_io_buffer(void) {
     return io_buf;
 }
 
+uint8_t *engine_title_buffer(void) {
+    return title_buf;
+}
+
 void engine_init(uint32_t w, uint32_t h) {
     viewport.w = w;
     viewport.h = h;
@@ -490,6 +603,7 @@ void engine_new_document(void) {
     eng.doc->id[1] = read_random_u64();
     eng.doc->strokes.count = 0;
     eng.doc->points.count = 0;
+    eng.doc->title_len = 0;
     eng.doc->max_z = 0;
 
     new_session();
@@ -511,3 +625,5 @@ uint32_t engine_point_max(void) { return eng.doc->points.cap; }
 uint32_t engine_stroke_max(void) { return eng.doc->strokes.cap; }
 uint32_t engine_io_capacity(void) { return IO_CAPACITY; }
 uint32_t engine_random_capacity(void) { return MAX_RANDOM_BYTES; }
+uint32_t engine_title_len_max(void) { return MAX_TITLE_LEN; }
+uint32_t engine_header_size(void) { return HEADER_SIZE; }

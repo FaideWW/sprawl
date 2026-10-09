@@ -10,7 +10,9 @@
     <body>
         <div id="app">
             <div id="toolbar">
-                <button id="newdoc">New</button>
+                <button id="new-document">New</button>
+                <input type="text" id="document-title" placeholder="Document title" />
+                <button id="open-file-ui">Files</button>
                 <div id="stats"></div>
                 <div id="colors">
                     Colors: 
@@ -19,6 +21,13 @@
                     <label for="bg-color">Background</label>
                     <input type="color" id="bg-color" value="#222222"/>
                 </div>
+            </div>
+            <div id="file-ui" hidden>
+                <div id="file-ui-header">
+                    Files
+                    <button id="close-file-ui">Close</button>
+                </div>
+                <div id="file-ui-list"></div>
             </div>
             <canvas id="canvas"></canvas>
         </div>

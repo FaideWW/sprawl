@@ -2,7 +2,15 @@
 #define SPRAWL_SERIALIZE_H_
 
 #include <stddef.h>
+#include <stdint.h>
 #include "engine.h"
+
+#define HEADER_SIZE 304
+#define STROKE_SIZE 72
+#define POINT_SIZE 12
+#define MAX_RECORD_SIZE 304
+
+#define SPRAWL_DOC_VERSION 1
 
 typedef enum {
     SprawlCodecStage_Header = 0,
@@ -46,10 +54,20 @@ typedef struct {
     SprawlDecodeError error;
 } sprawl_doc_decoder;
 
+typedef struct {
+    uint64_t id[2];
+    uint32_t stroke_count;
+    uint32_t point_count;
+    float background[4];
+    uint8_t title_len;
+    uint8_t title[MAX_TITLE_LEN];
+} sprawl_doc_header;
+
 void doc_encoder_begin(sprawl_doc_encoder *enc, const sprawl_document *doc);
 uint32_t doc_encoder_next(sprawl_doc_encoder *enc, uint8_t *buf, uint32_t cap);
 
 void doc_decoder_begin(sprawl_doc_decoder *dec, sprawl_document *doc, uint64_t read_total);
+SprawlDecodeError doc_read_header(const uint8_t *buf, const uint64_t total_bytes, sprawl_doc_header *out);
 uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uint32_t cap);
 bool doc_decoder_end(sprawl_doc_decoder *dec);
 SprawlDecodeError doc_decoder_error(sprawl_doc_decoder *dec);

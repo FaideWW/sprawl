@@ -1,6 +1,8 @@
-import { engine } from "./engine.ts";
+import { engine, readTitle } from "./engine.ts";
 
 export const LAST_DOC_KEY = `sprawl:lastDocId`;
+export const CAMERA_PREFIX = "sprawl:view:";
+
 const ioBuffer = engine._engine_io_buffer();
 const randomBuffer = engine._engine_random_buffer();
 
@@ -11,6 +13,13 @@ export interface DocumentEncoding {
     id: string;
     revision: number;
     chunks: Uint8Array<ArrayBuffer>[];
+}
+
+export interface FileHeader {
+    id: string;
+    title: string;
+    readable: boolean;
+    lastModified: Date;
 }
 
 export function getCurrentDocId(): string {
@@ -136,12 +145,49 @@ export interface OpenOpts {
     discardCurrent: boolean;
 }
 
+export interface CameraPersist {
+    x: number;
+    y: number;
+    zoom: number;
+}
+
+export function persistCamera(id: string | null) {
+    if (id === null) return;
+    const x = engine._engine_camera_x();
+    const y = engine._engine_camera_y();
+    const zoom = engine._engine_camera_zoom();
+    localStorage.setItem(
+        `${CAMERA_PREFIX}${id}`,
+        JSON.stringify({
+            x,
+            y,
+            zoom,
+        }),
+    );
+}
+
+export function restoreCamera(id: string | null) {
+    if (id === null) return;
+    const cameraJSON = localStorage.getItem(`${CAMERA_PREFIX}${id}`);
+    if (cameraJSON === null) return;
+
+    try {
+        const camera = JSON.parse(cameraJSON) as CameraPersist;
+        engine._engine_set_camera(camera.x, camera.y, camera.zoom);
+    } catch (e) {
+        console.error(`failed to decode stored camera json: ${e}`);
+    }
+}
+
 export async function open(
     id: string | null,
     opts: OpenOpts = { discardCurrent: false },
 ) {
     const buf = id ? await readFile(id) : null;
     const old = opts.discardCurrent ? null : encodeIfChanged();
+    if (!opts.discardCurrent) {
+        persistCamera(getCurrentDocId());
+    }
     try {
         if (buf) {
             decode(buf);
@@ -150,8 +196,97 @@ export async function open(
         }
 
         lastSavedRevision = engine._engine_doc_revision();
-        localStorage.setItem(LAST_DOC_KEY, getCurrentDocId());
+        const currentId = getCurrentDocId();
+        restoreCamera(currentId);
+        localStorage.setItem(LAST_DOC_KEY, currentId);
     } finally {
         if (old) await writeFile(old.id, old.chunks);
     }
+}
+
+export async function remove(id: string) {
+    if (id === getCurrentDocId()) {
+        await open(null, { discardCurrent: true });
+    }
+    const opfsRoot = await navigator.storage.getDirectory();
+    await opfsRoot.removeEntry(`${id}.sprawl`);
+    localStorage.removeItem(`${CAMERA_PREFIX}${id}`);
+}
+
+export async function removeAll() {
+    await open(null, { discardCurrent: true });
+    const opfsRoot = await navigator.storage.getDirectory();
+    const names: string[] = [];
+    for await (const name of opfsRoot.keys()) {
+        if (name.endsWith(".sprawl")) {
+            names.push(name);
+        }
+    }
+
+    for (const name of names) {
+        await opfsRoot.removeEntry(name);
+    }
+
+    const cameras: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key !== null && key.startsWith(CAMERA_PREFIX)) {
+            cameras.push(key);
+        }
+    }
+
+    for (const c of cameras) {
+        localStorage.removeItem(c);
+    }
+}
+
+export async function listDocuments(): Promise<FileHeader[]> {
+    const fileList: FileHeader[] = [];
+    const opfsRoot = await navigator.storage.getDirectory();
+    const fileHandles = opfsRoot.entries();
+    const headerSize = engine._engine_header_size();
+    for await (const [filename, handle] of fileHandles) {
+        if (handle.kind === "file" && filename.endsWith(".sprawl")) {
+            try {
+                const file = await handle.getFile();
+                const fsBigInt = BigInt(file.size);
+                const sizeLo = Number(fsBigInt & 0xffffffffn);
+                const sizeHi = Number(fsBigInt >> 32n);
+                const headerBuf = await file.slice(0, headerSize).arrayBuffer();
+                const copySrc = new Uint8Array(headerBuf);
+                const heap = engine.HEAPU8;
+                heap.set(copySrc, ioBuffer);
+
+                const result = engine._engine_read_header(
+                    copySrc.length,
+                    sizeLo,
+                    sizeHi,
+                );
+                if (result !== 0) {
+                    console.error(
+                        `failed to load ${filename}: decode error=${result}`,
+                    );
+                }
+                const titleLen = engine._engine_header_title();
+                const title = readTitle(titleLen);
+
+                fileList.push({
+                    id: filename.slice(0, -7), // .sprawl
+                    readable: result === 0,
+                    title,
+                    lastModified: new Date(file.lastModified),
+                });
+            } catch (e) {
+                console.error(`failed to load ${filename}: ${e}`);
+                fileList.push({
+                    id: filename.slice(0, -7), // .sprawl
+                    readable: false,
+                    title: "",
+                    lastModified: new Date(0),
+                });
+            }
+        }
+    }
+
+    return fileList;
 }

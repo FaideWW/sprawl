@@ -15,7 +15,7 @@ body {
 
 #canvas {
     display: block;
-    touch-action: none;
+    touch-action: none; 
     width: 100%;
     height: 100%;
 }
@@ -44,4 +44,39 @@ body {
     margin: 0;
     padding: 0;
     border: 0;
+}
+
+#file-ui {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    min-width: 300px;
+    background-color: #333;
+    border: 1px solid #bbb;
+    padding: 2px;
+    color: #ccc;
+}
+
+#file-ui-header {
+    position: relative;
+    width: 100%;
+    border-bottom: 1px solid #bbb;
+}
+
+#close-file-ui {
+    float: right;
+}
+
+#file-ui-list {
+    position: relative;
+    max-height: 75vh;
+    overflow-y: auto;
+    width: 100%;
+}
+
+#file-ui-list > div {
+    display: flex;
+    width: 100%;
+    justify-content: space-between;
 }

@@ -1,5 +1,6 @@
 import { type Bench, createBench } from "./bench.ts";
-import { engine } from "./engine.ts";
+import { engine, readTitle, titleBuffer } from "./engine.ts";
+import { createFileUI } from "./file-ui.ts";
 import { parseHex } from "./shared.ts";
 import {
     enqueue,
@@ -7,6 +8,9 @@ import {
     LAST_DOC_KEY,
     type OpenOpts,
     open,
+    persistCamera,
+    remove,
+    removeAll,
     save,
 } from "./storage.ts";
 import {
@@ -22,6 +26,7 @@ declare global {
             viewFrames: number,
             setBaseline: boolean,
         ) => void;
+        deleteAllDocuments: () => void;
     }
 }
 
@@ -45,9 +50,13 @@ const canvas = app.querySelector<HTMLCanvasElement>("#canvas")!;
 const stats = app.querySelector<HTMLDivElement>("#stats")!;
 const strokeColor = app.querySelector<HTMLInputElement>("#stroke-color")!;
 const bgColor = app.querySelector<HTMLInputElement>("#bg-color")!;
-const newDocButton = app.querySelector<HTMLButtonElement>("#newdoc")!;
+const newDocButton = app.querySelector<HTMLButtonElement>("#new-document")!;
+const openFileUIButton = app.querySelector<HTMLButtonElement>("#open-file-ui")!;
+const docTitleInput = app.querySelector<HTMLInputElement>("#document-title")!;
 const sampleBuffer = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
 const selectorBuffer = engine._engine_target_buffer();
+
+const fileUI = createFileUI({ openDocument, deleteDocument });
 
 const frametimeBuffer = createTimingBuffer(30);
 const engineFrametimeBuffer = createTimingBuffer(30);
@@ -138,6 +147,7 @@ window.bench = (
     setBaseline = false,
 ) => {
     if (bench) return;
+    fileUI.hide();
     preBenchDocId = getCurrentDocId();
     openDocument(null).then(() => {
         maxReached = false;
@@ -150,6 +160,16 @@ window.bench = (
             viewFrames,
             setBaseline,
         );
+    });
+};
+
+window.deleteAllDocuments = () => {
+    enqueue(async () => {
+        try {
+            await removeAll();
+        } finally {
+            syncUI();
+        }
     });
 };
 
@@ -211,6 +231,7 @@ function handleBeginStroke(e: PointerEvent) {
 
 document.addEventListener("visibilitychange", (e) => {
     if (document.hidden && !bench) {
+        persistCamera(getCurrentDocId());
         enqueue(save);
     }
     lastFrameTime = e.timeStamp;
@@ -373,6 +394,23 @@ newDocButton.addEventListener("click", async () => {
     openDocument(null);
 });
 
+docTitleInput.addEventListener("change", () => {
+    if (bench) return;
+    const heap = engine.HEAPU8;
+    const value = docTitleInput.value;
+    const bufferLen = engine._engine_title_len_max();
+    const encoder = new TextEncoder();
+    const result = encoder.encodeInto(
+        value,
+        heap.subarray(titleBuffer, titleBuffer + bufferLen),
+    );
+    engine._engine_set_title(result.written);
+
+    const titleLen = engine._engine_title();
+    docTitleInput.value = readTitle(titleLen);
+    debounce(() => enqueue(save), 1000);
+});
+
 strokeColor.addEventListener("input", () => {
     if (bench) return;
     const value = strokeColor.value;
@@ -384,6 +422,11 @@ bgColor.addEventListener("input", () => {
     const value = bgColor.value;
     engine._engine_set_background(...parseHex(value));
     debounce(() => enqueue(save), 1000);
+});
+
+openFileUIButton.addEventListener("click", () => {
+    if (bench) return;
+    fileUI.show();
 });
 
 function updateStats() {
@@ -468,6 +511,8 @@ function syncUI(): void {
     engine._engine_set_color(...parseHex(strokeColor.value));
     const engineBGColor = engine._engine_background_rgb();
     bgColor.value = "#" + engineBGColor.toString(16).padStart(6, "0");
+    const titleLen = engine._engine_title();
+    docTitleInput.value = readTitle(titleLen);
 }
 
 function openDocument(
@@ -477,6 +522,16 @@ function openDocument(
     return enqueue(async () => {
         try {
             await open(id, opts);
+        } finally {
+            syncUI();
+        }
+    });
+}
+
+function deleteDocument(id: string) {
+    return enqueue(async () => {
+        try {
+            await remove(id);
         } finally {
             syncUI();
         }
@@ -500,6 +555,7 @@ async function sprawlInit() {
     await openDocument(localStorage.getItem(LAST_DOC_KEY)).catch(() =>
         openDocument(null),
     );
+
     requestAnimationFrame(renderStep);
 }
 

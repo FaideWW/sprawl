@@ -7,18 +7,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#define HEADER_SIZE 48
-#define STROKE_SIZE 72
-#define POINT_SIZE 12
-#define MAX_RECORD_SIZE 72
-
-#define SPRAWL_DOC_VERSION 1
-
 /**
 *   serialized document layout:
 *   --- 
 *
-*   header   magic "SPRL" (4) | version u16 | reserved u16 | doc_id u64*2 | stroke_count u32 | point_count u32 | background f32*4
+*   header   magic "SPRL" (4) | version u16 | reserved u16 | doc_id u64*2 | stroke_count u32 | point_count u32 | background f32*4 | title_len u8 | title u8*255
 *   strokes  stroke_count * fixed-size record, in z order:
 *            session u64 | seq u32 | z u64 | undo_len u32 | origin f64*2 | scale f64 | color f32*4 | radius f32 | point_count u32
 *   points   point_count * (x f32 | y f32 | p f32), concatenated in stroke order
@@ -27,6 +20,11 @@
 static uint8_t *write_bytes(uint8_t *p, const void *src, size_t n) {
     memcpy(p, src, n);
     return p + n;
+}
+
+static uint8_t *write_u8(uint8_t *p, uint8_t v) {
+    *p = v;
+    return p+1;
 }
 
 static uint8_t *write_u16(uint8_t *p, uint16_t v) {
@@ -64,6 +62,13 @@ static const uint8_t *read_bytes(const uint8_t *p, void *dest, size_t n) {
         memcpy(dest, p, n);
     }
     return p + n;
+}
+
+static const uint8_t *read_u8(const uint8_t *p, uint8_t *v) {
+    if (v != NULL) {
+        *v = *p;
+    }
+    return p+1;
 }
 
 static const uint8_t *read_u16(const uint8_t *p, uint16_t *v) {
@@ -181,6 +186,13 @@ uint32_t doc_encoder_next(sprawl_doc_encoder *enc, uint8_t *buf, uint32_t cap) {
                 p = write_f32(p, enc->doc->background[1]);
                 p = write_f32(p, enc->doc->background[2]);
                 p = write_f32(p, enc->doc->background[3]);
+
+                p = write_u8(p, enc->doc->title_len);
+                p = write_bytes(p, enc->doc->title, enc->doc->title_len);
+                for (uint32_t i = enc->doc->title_len; i < MAX_TITLE_LEN; i++) {
+                    p = write_u8(p, 0);
+                }
+
                 assert (p - start == HEADER_SIZE);
                 enc->stage = SprawlCodecStage_Strokes;
             } break;
@@ -301,6 +313,65 @@ static const uint8_t *read_point(const uint8_t *p, sprawl_point *point) {
     return p;
 }
 
+SprawlDecodeError doc_read_header(const uint8_t *buf, const uint64_t total_bytes, sprawl_doc_header *out) {
+    const uint8_t *p = buf;
+    const uint8_t *start = buf;
+
+    uint8_t magic_buf[4];
+    p = read_bytes(p, magic_buf, 4);
+
+    if (memcmp((const char *)magic_buf, "SPRL", 4) != 0) {
+        return SprawlDecodeError_NotASPRL;
+    }
+
+    uint16_t doc_version;
+    p = read_u16(p, &doc_version);
+
+    if (doc_version != SPRAWL_DOC_VERSION) {
+        return SprawlDecodeError_UnsupportedVersion;
+    }
+
+    // reserved bytes are unused, so just advance past them
+    p = read_u16(p, NULL);
+
+    p = read_u64(p, &out->id[0]);
+    p = read_u64(p, &out->id[1]);
+
+    p = read_u32(p, &out->stroke_count);
+
+    p = read_u32(p, &out->point_count);
+
+    p = read_f32(p, &out->background[0]);
+    p = read_f32(p, &out->background[1]);
+    p = read_f32(p, &out->background[2]);
+    p = read_f32(p, &out->background[3]);
+
+    for (int i = 0; i < 4; i++) {
+        if (!(out->background[i] >= 0.0 && out->background[i] <= 1.0)) {
+            fprintf(stderr, "bg (%u=%f)\n", i, out->background[i]);
+            return SprawlDecodeError_InvalidValue;
+        }
+    }
+
+    p = read_u8(p, &out->title_len);
+    p = read_bytes(p, out->title, MAX_TITLE_LEN);
+
+    if (validate_title(out->title, (uint32_t)out->title_len, MAX_TITLE_LEN) != ValidateTitleResult_Success) {
+        return SprawlDecodeError_InvalidValue;
+    }
+
+    uint64_t expected = HEADER_SIZE + 
+        ((uint64_t)out->stroke_count * STROKE_SIZE) +
+        ((uint64_t)out->point_count * POINT_SIZE);
+
+    if (expected != total_bytes) {
+        return SprawlDecodeError_SizeMismatch;
+    }
+
+    assert(p - start == HEADER_SIZE);
+    return SprawlDecodeError_Success;
+}
+
 uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uint32_t cap) {
     if (dec->error != SprawlDecodeError_Success) return 0;
     const uint8_t *p = buf;
@@ -311,70 +382,36 @@ uint32_t doc_decoder_next(sprawl_doc_decoder *dec, const uint8_t *buf, const uin
         switch (dec->stage) {
             case SprawlCodecStage_Header: {
                 if (end - p < HEADER_SIZE) return p - buf;
-                const uint8_t *start = p;
-
-                uint8_t magic_buf[4];
-                p = read_bytes(p, magic_buf, 4);
-
-                if (memcmp((const char *)magic_buf, "SPRL", 4) != 0) {
-                    dec->error = SprawlDecodeError_NotASPRL;
+                sprawl_doc_header h;
+                SprawlDecodeError err = doc_read_header(p, dec->total_bytes, &h);
+                if (err != SprawlDecodeError_Success) {
+                    dec->error = err;
                     return p - buf;
                 }
+                p += HEADER_SIZE;
                 
-                uint16_t doc_version;
-                p = read_u16(p, &doc_version);
-
-                if (doc_version != SPRAWL_DOC_VERSION) {
-                    dec->error = SprawlDecodeError_UnsupportedVersion;
-                    return p - buf;
-                }
-
-                // reserved bytes are unused, so just advance past them
-                p = read_u16(p, NULL);
-
-                p = read_u64(p, &dec->doc->id[0]);
-                p = read_u64(p, &dec->doc->id[1]);
-                
-                uint32_t requested_strokes;
-                p = read_u32(p, &requested_strokes);
-               
-                uint32_t requested_points;
-                p = read_u32(p, &requested_points);
-
-                p = read_f32(p, &dec->doc->background[0]);
-                p = read_f32(p, &dec->doc->background[1]);
-                p = read_f32(p, &dec->doc->background[2]);
-                p = read_f32(p, &dec->doc->background[3]);
-
-                for (int i = 0; i < 4; i++) {
-                    if (!(dec->doc->background[i] >= 0.0 && dec->doc->background[i] <= 1.0)) {
-                        fprintf(stderr, "bg (%u=%f)\n", i, dec->doc->background[i]);
-                        dec->error = SprawlDecodeError_InvalidValue;
-                        return p - buf;
-                    }
-                }
-
-                uint64_t expected = HEADER_SIZE + 
-                    ((uint64_t)requested_strokes * STROKE_SIZE) +
-                    ((uint64_t)requested_points * POINT_SIZE);
-
-                if (expected != dec->total_bytes) {
-                    dec->error = SprawlDecodeError_SizeMismatch;
-                    return p - buf;
-                }
-                
-                if (!sprawl_reserve_strokes(&dec->doc->strokes, requested_strokes)) {
+                if (!sprawl_reserve_strokes(&dec->doc->strokes, h.stroke_count)) {
                     dec->error = SprawlDecodeError_TooManyEntries;
                     return p - buf;
                 }
-                dec->doc->strokes.count = requested_strokes;
-                if (!sprawl_reserve_points(&dec->doc->points, requested_points)) {
+                dec->doc->strokes.count = h.stroke_count;
+                if (!sprawl_reserve_points(&dec->doc->points, h.point_count)) {
                     dec->error = SprawlDecodeError_TooManyEntries;
                     return p - buf;
                 }
-                dec->doc->points.count = requested_points;
+                dec->doc->points.count = h.point_count;
 
-                assert(p - start == HEADER_SIZE);
+                dec->doc->id[0] = h.id[0];
+                dec->doc->id[1] = h.id[1];
+
+                dec->doc->background[0] = h.background[0];
+                dec->doc->background[1] = h.background[1];
+                dec->doc->background[2] = h.background[2];
+                dec->doc->background[3] = h.background[3];
+
+                dec->doc->title_len = h.title_len;
+                memcpy(dec->doc->title, h.title, MAX_TITLE_LEN);
+
                 dec->stage = SprawlCodecStage_Strokes;
             } break;
             case SprawlCodecStage_Strokes: {

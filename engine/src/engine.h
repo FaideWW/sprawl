@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define KB(x) (x) * 1024
+#define MAX_TITLE_LEN UINT8_MAX
 
 typedef enum {
     AppendSamplesResult_Success = 0,
@@ -12,6 +13,12 @@ typedef enum {
     AppendSamplesResult_BufferOverflow = 2,
     AppendSamplesResult_NoOpenStroke = 3,
 } AppendSamplesResult;
+
+typedef enum {
+    ValidateTitleResult_Success = 0,
+    ValidateTitleResult_TooLong = 1,
+    ValidateTitleResult_InvalidUTF8 = 2,
+} ValidateTitleResult;
 
 typedef enum {
     BeginStrokeResult_Success = 0,
@@ -66,6 +73,8 @@ typedef struct {
 
 typedef struct {
     uint64_t id[2];
+    uint8_t title_len;
+    char title[MAX_TITLE_LEN];
     sprawl_stroke_array strokes;
     sprawl_point_array points;
     float background[4];
@@ -102,6 +111,7 @@ bool sprawl_reserve_strokes(sprawl_stroke_array *a, uint32_t needed);
 bool sprawl_reserve_points(sprawl_point_array *a, uint32_t needed);
 bool reserve_rendered_strokes(sprawl_rendered_stroke_array *a, uint32_t needed);
 bool sprawl_reserve_u32(u32_array *a, uint32_t needed);
+ValidateTitleResult validate_title(const uint8_t *buf, uint32_t len, uint32_t cap);
 
 #endif
 

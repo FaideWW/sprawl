@@ -20,12 +20,19 @@ EXPORTS := "[ \
 		   '_engine_pan', \
 		   '_engine_zoom_at', \
 		   '_engine_set_camera', \
+		   '_engine_camera_x', \
+		   '_engine_camera_y', \
+		   '_engine_camera_zoom', \
 		   '_engine_resize', \
+		   '_engine_title', \
+		   '_engine_set_title', \
 		   '_engine_frame', \
 		   '_engine_set_color', \
 		   '_engine_set_background', \
 		   '_engine_undo', \
 		   '_engine_redo', \
+		   '_engine_read_header', \
+		   '_engine_header_title', \
 		   '_engine_save_begin', \
 		   '_engine_save_next', \
 		   '_engine_load_begin', \
@@ -39,12 +46,15 @@ EXPORTS := "[ \
 		   '_engine_sample_buffer', \
 		   '_engine_random_buffer', \
 		   '_engine_io_buffer', \
+		   '_engine_title_buffer', \
 		   '_engine_point_count', \
 		   '_engine_stroke_count', \
 		   '_engine_point_max', \
 		   '_engine_stroke_max', \
 		   '_engine_io_capacity', \
-		   '_engine_random_capacity' \
+		   '_engine_random_capacity', \
+		   '_engine_title_len_max', \
+		   '_engine_header_size' \
 		   ]"
 
 RUNTIME_EXPORTS := "[ \
