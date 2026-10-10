@@ -21,6 +21,12 @@
 #define SRGB_GAMMA 2.4f
 #define SRGB_OFFSET 0.055f
 
+#define SUBDIVISION_TOLERANCE_PX 0.25
+#define MAX_SUBDIVISIONS 64
+
+#define NEW_SAMPLE_THRESHOLD_PX 2
+#define CULL_MARGIN_PX 1.5 // MIN_RADIUS (0.5) + 1px anti-aliasing padding
+
 static char target_buf[MAX_SELECTOR_LEN];
 static sprawl_sample sample_buf[MAX_SAMPLES];
 static size_t random_bytes_used;
@@ -115,6 +121,18 @@ bool sprawl_reserve_u32(u32_array *a, uint32_t needed) {
     return true;
 }
 
+static float distance(const sprawl_point a, const sprawl_point b) {
+    float dx = b.x - a.x;
+    float dy = b.y - a.y;
+    return sqrtf(dx*dx + dy*dy);
+}
+
+static float second_difference(const sprawl_point *p) {
+    float x = p[0].x - 2.0f * p[1].x + p[2].x;
+    float y = p[0].y - 2.0f * p[1].y + p[2].y;
+    return sqrtf(x*x + y*y);
+}
+
 static uint64_t next_z(double now_ms) {
     uint64_t t = (uint64_t)now_ms;
     eng.doc->max_z = t > eng.doc->max_z ? t : eng.doc->max_z + 1;
@@ -163,25 +181,48 @@ BeginStrokeResult engine_begin_stroke(double now_ms) {
     }
 
     session.stroke_open = true;
+    session.has_pending = false;
     eng.doc->strokes.data[eng.doc->strokes.count++] = stroke;
 
     dirty = true;
     return BeginStrokeResult_Success;
 }
 
-// INFO: an assumption I'm making right now is that the sample buffer always contains 
-// samples to be appended in the range [0, sampleCount-1]. Meaning that the buffer is 
-// always fully consumed after calling _engine_append_samples().
-AppendSamplesResult engine_append_samples(uint32_t sampleCount) {
-    if (sampleCount > MAX_SAMPLES) return AppendSamplesResult_BufferOverflow;
+static void append_point(sprawl_stroke *s, sprawl_point point) {
+    eng.doc->points.data[eng.doc->points.count++] = point;
+    s->points_count++;
+
+    if (s->points_count == 1) {
+        s->bounds[0] = point.x;
+        s->bounds[1] = point.y;
+        s->bounds[2] = point.x;
+        s->bounds[3] = point.y;
+    } else {
+        if (s->bounds[0] > point.x) s->bounds[0] = point.x;
+        if (s->bounds[1] > point.y) s->bounds[1] = point.y;
+        if (s->bounds[2] < point.x) s->bounds[2] = point.x;
+        if (s->bounds[3] < point.y) s->bounds[3] = point.y;
+
+        s->max_span = fmaxf(s->max_span, distance(eng.doc->points.data[s->first_point + s->points_count - 2], point));
+    }
+    if (s->points_count >= 3) {
+        s->max_dd = fmaxf(s->max_dd, second_difference(&eng.doc->points.data[eng.doc->points.count - 3]));
+        
+
+    }
+}
+
+AppendSamplesResult engine_append_samples(uint32_t sample_count) {
+    if (sample_count > MAX_SAMPLES) return AppendSamplesResult_BufferOverflow;
     if (!session.stroke_open) return AppendSamplesResult_NoOpenStroke;
 
     sprawl_stroke *stroke = &eng.doc->strokes.data[eng.doc->strokes.count - 1];
+    float new_sample_threshold = NEW_SAMPLE_THRESHOLD_PX / (stroke->scale * camera.zoom);
 
-    if (!sprawl_reserve_points(&eng.doc->points, eng.doc->points.count + sampleCount)) {
+    if (!sprawl_reserve_points(&eng.doc->points, eng.doc->points.count + sample_count)) {
         return AppendSamplesResult_MaxReached;
     }
-    for (uint32_t i = 0; i < sampleCount; i++) {
+    for (uint32_t i = 0; i < sample_count; i++) {
         sprawl_sample sample = sample_buf[i];
         sprawl_point point = {0};
         // convert screenspace to worldspace
@@ -198,8 +239,16 @@ AppendSamplesResult engine_append_samples(uint32_t sampleCount) {
         point.y = (float)((wy - stroke->origin[1]) / stroke->scale);
 
         point.p = sample.pressure;
-        eng.doc->points.data[eng.doc->points.count++] = point;
-        stroke->points_count++;
+
+        // test the new sample threshold
+        if (stroke->points_count > 0 && distance(eng.doc->points.data[eng.doc->points.count-1], point) < new_sample_threshold) {
+            session.pending = point;
+            session.has_pending = true;
+            continue;
+        }
+        
+        append_point(stroke, point);
+        session.has_pending = false;
     }
 
     dirty = true;
@@ -215,12 +264,15 @@ void engine_end_stroke(void) {
         // If this stroke has no points, delete it
         eng.doc->strokes.count--;
     } else {
-        if (s->points_count == 1) {
-            // If this stroke has one point, duplicate it so the renderer sees a coherent segment
-            if (sprawl_reserve_points(&eng.doc->points, eng.doc->points.count+1)) {
-                eng.doc->points.data[eng.doc->points.count++] = eng.doc->points.data[s->first_point];
-                s->points_count++;
-            }
+        // If we have a pending point, append it
+        if (session.has_pending && sprawl_reserve_points(&eng.doc->points, eng.doc->points.count + 1)) {
+            append_point(s, session.pending);
+        }
+
+        // If this stroke has one point, duplicate it so the renderer sees a coherent segment
+        if (s->points_count == 1 && sprawl_reserve_points(&eng.doc->points, eng.doc->points.count + 1)) {
+            eng.doc->points.data[eng.doc->points.count++] = eng.doc->points.data[s->first_point];
+            s->points_count++;
         }
         if (sprawl_reserve_u32(&session.undo, session.undo.count + 1)) {
             session.undo.data[session.undo.count++] = eng.doc->strokes.count-1;
@@ -380,20 +432,35 @@ bool engine_frame(void) {
         return false;
     }
     for (uint32_t i = 0; i < eng.doc->strokes.count; i++) {
-        if (eng.doc->strokes.data[i].undo_len % 2 == 1) continue;
+        sprawl_stroke *s = &eng.doc->strokes.data[i];
+        if (s->undo_len % 2 == 1) continue;
+
+        double k = s->scale * camera.zoom;
+        double ox = (s->origin[0] - camera.center[0]) * camera.zoom + (viewport.w / 2.0);
+        double oy = (s->origin[1] - camera.center[1]) * camera.zoom + (viewport.h / 2.0);
+
+        // Catmull-Rom splines can "swing" out of the bounding box of its control points 
+        // by at most 4/3rds of its maximum span
+        double pad = (s->radius + (4.0 / 3.0) * s->max_span) * k + CULL_MARGIN_PX;
+
+        // cull strokes that are completely outside of screen space
+        if (s->bounds[2] * k + ox < -pad || s->bounds[0] * k + ox > viewport.w + pad ||
+            s->bounds[3] * k + oy < -pad || s->bounds[1] * k + oy > viewport.h + pad) continue;
+
+        sprawl_rendered_stroke *r = &rendered.data[rendered_i];
         
-        rendered.data[rendered_i].offset[0] = (float)((eng.doc->strokes.data[i].origin[0] - camera.center[0]) * camera.zoom + (viewport.w / 2.0));
-        rendered.data[rendered_i].offset[1] = (float)((eng.doc->strokes.data[i].origin[1] - camera.center[1]) * camera.zoom + (viewport.h / 2.0));
-        rendered.data[rendered_i].k = (float)(eng.doc->strokes.data[i].scale * camera.zoom);
+        r->offset[0] = (float)((s->origin[0] - camera.center[0]) * camera.zoom + (viewport.w / 2.0));
+        r->offset[1] = (float)((s->origin[1] - camera.center[1]) * camera.zoom + (viewport.h / 2.0));
+        r->k = (float)(s->scale * camera.zoom);
 
-        rendered.data[rendered_i].color[0] = eng.doc->strokes.data[i].color[0];
-        rendered.data[rendered_i].color[1] = eng.doc->strokes.data[i].color[1];
-        rendered.data[rendered_i].color[2] = eng.doc->strokes.data[i].color[2];
-        rendered.data[rendered_i].color[3] = eng.doc->strokes.data[i].color[3];
-        rendered.data[rendered_i].radius = eng.doc->strokes.data[i].radius * rendered.data[rendered_i].k;
+        memcpy(r->color, s->color, sizeof(r->color));
+        r->radius = s->radius * r->k;
 
-        rendered.data[rendered_i].first_point = eng.doc->strokes.data[i].first_point;
-        rendered.data[rendered_i].points_count = eng.doc->strokes.data[i].points_count;
+        r->first_point = s->first_point;
+        r->points_count = s->points_count;
+
+        float n = ceilf(sqrtf(0.75f * s->max_dd * r->k / SUBDIVISION_TOLERANCE_PX));
+        r->subdivisions = (uint32_t)fminf(fmaxf(n, 1.0f), MAX_SUBDIVISIONS);
         rendered_i++;
     }
 
@@ -522,6 +589,32 @@ bool engine_load_end(void) {
             eng.doc->max_z = eng.doc->strokes.data[eng.doc->strokes.count-1].z;
         } else {
             eng.doc->max_z = 0;
+        }
+   
+        for (uint32_t si = 0; si < eng.doc->strokes.count; si++) {
+            sprawl_stroke *s = &eng.doc->strokes.data[si];
+            s->max_dd = 0.0f;
+            s->max_span = 0.0f;
+
+            if (s->points_count == 0) continue;
+            sprawl_point first_point = eng.doc->points.data[s->first_point];
+            s->bounds[0] = first_point.x;
+            s->bounds[1] = first_point.y;
+            s->bounds[2] = first_point.x;
+            s->bounds[3] = first_point.y;
+            for (uint32_t j = 1; j < s->points_count; j++) {
+                sprawl_point point = eng.doc->points.data[s->first_point + j];
+                if (s->bounds[0] > point.x) s->bounds[0] = point.x;
+                if (s->bounds[1] > point.y) s->bounds[1] = point.y;
+                if (s->bounds[2] < point.x) s->bounds[2] = point.x;
+                if (s->bounds[3] < point.y) s->bounds[3] = point.y;
+
+                s->max_span = fmaxf(s->max_span, distance(eng.doc->points.data[s->first_point + j - 1], point));
+
+                if (j > 1) {
+                    s->max_dd = fmaxf(s->max_dd, second_difference(&eng.doc->points.data[s->first_point + j - 2]));
+                }
+            }
         }
      
         doc_revision = 0;

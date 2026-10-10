@@ -6,6 +6,8 @@
 #include "renderer.h"
 #include "shaders.h"
 
+#define UNUSED(x) (void)(x)
+
 typedef struct {
     float viewport[2];
     float _pad[2];
@@ -53,6 +55,9 @@ static void handle_init_resources_error_scope(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(status);
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     if (type != WGPUErrorType_NoError) {
         r.status = RendererStatus_Error;
         log_error(message);
@@ -69,6 +74,10 @@ static void handle_device_devicelost(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(device);
+    UNUSED(reason);
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     r.status = RendererStatus_Error;
     log_error(message);
 }
@@ -80,6 +89,10 @@ static void handle_device_uncapturederror(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(device);
+    UNUSED(type);
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     log_error(message);
 }
 
@@ -89,6 +102,10 @@ static void handle_queue_work_done(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(status);
+    UNUSED(message);
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     r.frames_in_flight--;
 }
 
@@ -98,6 +115,8 @@ static void handle_timestamp_readback_buffer_map(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     if (status != WGPUMapAsyncStatus_Success) {
         log_error(message);
         r.ts_readback_pending = false;
@@ -282,6 +301,8 @@ static void handle_device_request(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     if (status != WGPURequestDeviceStatus_Success) {
         r.status = RendererStatus_Error;
         log_error(message);
@@ -337,6 +358,8 @@ static void handle_adapter_request(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
+    UNUSED(userdata1);
+    UNUSED(userdata2);
     if (status != WGPURequestAdapterStatus_Success) {
         r.status = RendererStatus_Error;
         log_error(message);
@@ -487,7 +510,6 @@ static bool grow_and_copy_point_buffer(uint32_t requested_points) {
 }
 
 static bool grow_stroke_buffer(uint32_t requested_strokes) {
-    uint64_t old_size = r.stroke_buf_cap * sizeof(sprawl_rendered_stroke);
     uint32_t cap = r.stroke_buf_cap;
     while (cap < requested_strokes) {
         cap *= 2; 
@@ -586,7 +608,11 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     for (uint32_t i = 0; i < count; i++) {
         const sprawl_rendered_stroke *s = &strokes[i];
         if (s->points_count < 2) continue; 
-        wgpuRenderPassEncoderDraw(render_pass, 4, s->points_count - 1, i * 4, s->first_point);
+        wgpuRenderPassEncoderDraw(render_pass, 
+                                  4, 
+                                  (s->points_count - 1) * s->subdivisions, 
+                                  i * 4, 
+                                  s->first_point);
     }
 
     wgpuRenderPassEncoderEnd(render_pass);

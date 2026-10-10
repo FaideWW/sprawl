@@ -21,7 +21,8 @@ typedef struct {
     float radius;
     uint32_t first_point;
     uint32_t points_count;
-    uint32_t _pad[2];
+    uint32_t subdivisions;
+    uint32_t _pad;
 } sprawl_rendered_stroke;
 
 void renderer_init(const void *target, uint32_t width, uint32_t height);

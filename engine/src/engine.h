@@ -47,6 +47,11 @@ typedef struct {
     float radius;
     uint32_t first_point;
     uint32_t points_count;
+
+    // derived data
+    float max_dd;
+    float max_span;
+    float bounds[4];
 } sprawl_stroke;
 
 typedef struct {
@@ -93,6 +98,8 @@ typedef struct {
     u32_array undo;
     u32_array redo;
     bool stroke_open;
+    sprawl_point pending;
+    bool has_pending;
     float color[4];
 } sprawl_session;
 
