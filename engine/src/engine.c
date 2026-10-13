@@ -5,9 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "array.h"
+#include "engine.h"
 #include "renderer.h"
 #include "serialize.h"
-#include "engine.h"
 // #include "arena.h"
 
 #define MAX_SELECTOR_LEN 256
@@ -26,6 +28,7 @@
 
 #define NEW_SAMPLE_THRESHOLD_PX 2
 #define CULL_MARGIN_PX 1.5 // MIN_RADIUS (0.5) + 1px anti-aliasing padding
+
 
 static char target_buf[MAX_SELECTOR_LEN];
 static sprawl_sample sample_buf[MAX_SAMPLES];
@@ -52,35 +55,21 @@ static uint32_t uploaded_points;
 static sprawl_rendered_stroke_array rendered;
 static bool dirty = false;
 
-static void *grow_array(void *data, uint32_t cap, uint32_t needed, size_t elem_size, uint32_t *new_cap) {
-    if (needed <= cap) { 
-        *new_cap = cap;
-        return data;  
-    }
-
-    uint32_t target_cap = cap ? cap : 4096;
-    while (target_cap < needed) { 
-        if (UINT32_MAX / 2 < target_cap) { 
-            target_cap = UINT32_MAX;
-        } else if (target_cap * 2 < needed) {
-            target_cap = needed; 
-        } else {
-            target_cap *= 2; 
-        }
-    }
-
-    if (target_cap > SIZE_MAX / elem_size) return NULL;
-    void *new_data = realloc(data, (size_t)target_cap * elem_size);
-    if (new_data == NULL) return NULL;
-
-    *new_cap = target_cap;
-    return new_data;
-}
-
 bool sprawl_reserve_strokes(sprawl_stroke_array *a, uint32_t needed) {
     if (needed <= a->cap) return true; 
     uint32_t cap;
     sprawl_stroke *s = grow_array(a->data, a->cap, needed, sizeof *s, &cap);
+    if (s == NULL) return false;
+
+    a->data = s;
+    a->cap = cap;
+    return true;
+}
+
+bool sprawl_reserve_erases(sprawl_erase_array *a, uint32_t needed) {
+    if (needed <= a->cap) return true; 
+    uint32_t cap;
+    sprawl_erase *s = grow_array(a->data, a->cap, needed, sizeof *s, &cap);
     if (s == NULL) return false;
 
     a->data = s;
@@ -110,7 +99,18 @@ bool reserve_rendered_strokes(sprawl_rendered_stroke_array *a, uint32_t needed) 
     return true;
 }
 
-bool sprawl_reserve_u32(u32_array *a, uint32_t needed) {
+bool sprawl_reserve_history(sprawl_history_array *a, uint32_t needed) {
+    if (needed <= a->cap) return true; 
+    uint32_t cap;
+    sprawl_history *u = grow_array(a->data, a->cap, needed, sizeof *u, &cap);
+    if (u == NULL) return false;
+
+    a->data = u;
+    a->cap = cap;
+    return true;
+}
+
+bool sprawl_reserve_u32(sprawl_u32_array *a, uint32_t needed) {
     if (needed <= a->cap) return true; 
     uint32_t cap;
     uint32_t *u = grow_array(a->data, a->cap, needed, sizeof *u, &cap);
@@ -119,6 +119,11 @@ bool sprawl_reserve_u32(u32_array *a, uint32_t needed) {
     a->data = u;
     a->cap = cap;
     return true;
+}
+
+static void screen_to_world(float sx, float sy, double out[2]) {
+    out[0] = camera.center[0] + (sx - viewport.w / 2.0) / camera.zoom;
+    out[1] = camera.center[1] + (sy - viewport.h / 2.0) / camera.zoom;
 }
 
 static float distance(const sprawl_point a, const sprawl_point b) {
@@ -139,7 +144,7 @@ static uint64_t next_z(double now_ms) {
     return eng.doc->max_z;
 }
 
-int sprawl_compare_id(sprawl_id a, sprawl_id b) {
+int sprawl_compare_id(const sprawl_id a, const sprawl_id b) {
     if (a.session != b.session) return a.session < b.session ? -1 : 1;
     if (a.seq != b.seq) return a.seq < b.seq ? -1 : 1;
     return 0;
@@ -159,11 +164,11 @@ static void new_session(void) {
     session.next_seq = 0;
     session.undo.count = 0;
     session.redo.count = 0;
-    session.stroke_open = false;
+    session.gesture = GestureKind_None;
 }
 
-BeginStrokeResult engine_begin_stroke(double now_ms) {
-    if (session.stroke_open) return BeginStrokeResult_HangingOpenStroke;
+BeginGestureResult engine_begin_stroke(double now_ms) {
+    if (session.gesture != GestureKind_None) return BeginGestureResult_HangingOpenGesture;
     sprawl_stroke stroke = {0};
     stroke.id = (sprawl_id){session.id, session.next_seq++};
     stroke.z = next_z(now_ms);
@@ -177,15 +182,15 @@ BeginStrokeResult engine_begin_stroke(double now_ms) {
     stroke.points_count = 0;
 
     if (!sprawl_reserve_strokes(&eng.doc->strokes, eng.doc->strokes.count+1)) {
-        return BeginStrokeResult_MaxReached;
+        return BeginGestureResult_MaxReached;
     }
 
-    session.stroke_open = true;
+    session.gesture = GestureKind_Stroke;
     session.has_pending = false;
     eng.doc->strokes.data[eng.doc->strokes.count++] = stroke;
 
     dirty = true;
-    return BeginStrokeResult_Success;
+    return BeginGestureResult_Success;
 }
 
 static void append_point(sprawl_stroke *s, sprawl_point point) {
@@ -212,12 +217,13 @@ static void append_point(sprawl_stroke *s, sprawl_point point) {
     }
 }
 
-AppendSamplesResult engine_append_samples(uint32_t sample_count) {
+AppendSamplesResult engine_append_stroke_samples(uint32_t sample_count) {
     if (sample_count > MAX_SAMPLES) return AppendSamplesResult_BufferOverflow;
-    if (!session.stroke_open) return AppendSamplesResult_NoOpenStroke;
+    if (session.gesture != GestureKind_Stroke) return AppendSamplesResult_NoOpenGesture;
 
-    sprawl_stroke *stroke = &eng.doc->strokes.data[eng.doc->strokes.count - 1];
+    sprawl_stroke *stroke = &ARRAY_LAST(eng.doc->strokes);
     float new_sample_threshold = NEW_SAMPLE_THRESHOLD_PX / (stroke->scale * camera.zoom);
+    double w[2];
 
     if (!sprawl_reserve_points(&eng.doc->points, eng.doc->points.count + sample_count)) {
         return AppendSamplesResult_MaxReached;
@@ -226,22 +232,21 @@ AppendSamplesResult engine_append_samples(uint32_t sample_count) {
         sprawl_sample sample = sample_buf[i];
         sprawl_point point = {0};
         // convert screenspace to worldspace
-        double wx = camera.center[0] + (sample.x - viewport.w / 2.0) / camera.zoom;
-        double wy = camera.center[1] + (sample.y - viewport.h / 2.0) / camera.zoom;
+        screen_to_world(sample.x, sample.y, w);
 
         if (stroke->points_count == 0) {
-            stroke->origin[0] = wx;
-            stroke->origin[1] = wy;
+            stroke->origin[0] = w[0];
+            stroke->origin[1] = w[1];
         }
 
         // convert worldspace to local (stroke) space
-        point.x = (float)((wx - stroke->origin[0]) / stroke->scale);
-        point.y = (float)((wy - stroke->origin[1]) / stroke->scale);
+        point.x = (float)((w[0] - stroke->origin[0]) / stroke->scale);
+        point.y = (float)((w[1] - stroke->origin[1]) / stroke->scale);
 
         point.p = sample.pressure;
 
         // test the new sample threshold
-        if (stroke->points_count > 0 && distance(eng.doc->points.data[eng.doc->points.count-1], point) < new_sample_threshold) {
+        if (stroke->points_count > 0 && distance(ARRAY_LAST(eng.doc->points), point) < new_sample_threshold) {
             session.pending = point;
             session.has_pending = true;
             continue;
@@ -256,9 +261,9 @@ AppendSamplesResult engine_append_samples(uint32_t sample_count) {
 }
 
 void engine_end_stroke(void) {
-    if (!session.stroke_open) return;
+    if (session.gesture != GestureKind_Stroke) return;
 
-    sprawl_stroke *s = &eng.doc->strokes.data[eng.doc->strokes.count - 1];
+    sprawl_stroke *s = &ARRAY_LAST(eng.doc->strokes);
    
     if (s->points_count == 0) {
         // If this stroke has no points, delete it
@@ -274,25 +279,175 @@ void engine_end_stroke(void) {
             eng.doc->points.data[eng.doc->points.count++] = eng.doc->points.data[s->first_point];
             s->points_count++;
         }
-        if (sprawl_reserve_u32(&session.undo, session.undo.count + 1)) {
-            session.undo.data[session.undo.count++] = eng.doc->strokes.count-1;
+        if (sprawl_reserve_history(&session.undo, session.undo.count + 1)) {
+            session.undo.data[session.undo.count++] = (sprawl_history){ 
+                HistoryKind_Stroke, 
+                eng.doc->strokes.count-1 
+            };
             session.redo.count = 0;
         }
     }
 
     doc_revision++;
 
-    session.stroke_open = false;
+    session.gesture = GestureKind_None;
     dirty = true;
 }
 
 void engine_cancel_stroke(void) {
-    if (!session.stroke_open) return;
+    if (session.gesture != GestureKind_Stroke) return;
 
     eng.doc->points.count = eng.doc->strokes.data[--eng.doc->strokes.count].first_point;
     if (uploaded_points > eng.doc->points.count) uploaded_points = eng.doc->points.count;
 
-    session.stroke_open = false;
+    session.gesture = GestureKind_None;
+    dirty = true;
+}
+
+BeginGestureResult engine_begin_erase(double now_ms) {
+    if (session.gesture != GestureKind_None) return BeginGestureResult_HangingOpenGesture;
+    sprawl_erase erase = {0};
+    erase.id = (sprawl_id){session.id, session.next_seq++};
+    erase.z = next_z(now_ms);
+    erase.undo_len = 0;
+    erase.first_target = eng.doc->erase_targets.count;
+
+    if (!sprawl_reserve_erases(&eng.doc->erases, eng.doc->erases.count + 1)) {
+        return BeginGestureResult_MaxReached;
+    }
+
+    session.gesture = GestureKind_Erase;
+    session.has_erase_prev = false;
+    eng.doc->erases.data[eng.doc->erases.count++] = erase;
+
+    return BeginGestureResult_Success;
+}
+
+static bool test_sample_stroke_hit(sprawl_stroke *s, double sample_w[2], double radius_w) {
+    float sample_local[2];
+    sample_local[0] = (sample_w[0] - s->origin[0]) / s->scale;
+    sample_local[1] = (sample_w[1] - s->origin[1]) / s->scale;
+
+    double radius_local = radius_w / s->scale;
+
+    double minkowski_radius = radius_local + s->radius;
+
+    // test the stroke's bounding box first
+    if (((s->bounds[0] - sample_local[0]) > minkowski_radius) ||  ((sample_local[0] - s->bounds[2]) > minkowski_radius) ||
+        ((s->bounds[1] - sample_local[1]) > minkowski_radius) ||  ((sample_local[1] - s->bounds[3]) > minkowski_radius)) return false;
+
+
+    for (uint32_t i = 1; i < s->points_count; i++) {
+        // point's distance from segment (adapted from fragment shader)
+        sprawl_point a = eng.doc->points.data[s->first_point + (i-1)];
+        sprawl_point b = eng.doc->points.data[s->first_point + (i)];
+
+        sprawl_point pa = {sample_local[0]-a.x, sample_local[1]-a.y, 0.0};
+        sprawl_point ba = {b.x-a.x, b.y-a.y, 0.0};
+
+        float proj = ((pa.x*ba.x)+(pa.y*ba.y)) / fmaxf((ba.x*ba.x)+(ba.y*ba.y), 1e-8); 
+
+        // [0,1] along the segment closest to the point (clamped to the ends)
+        float h = fmaxf(fminf(proj, 1.0), 0.0);
+
+        ba.x *= h;
+        ba.y *= h;
+
+        float dist = sqrtf((pa.x - ba.x)*(pa.x - ba.x) + (pa.y - ba.y)*(pa.y - ba.y));
+        if (dist < minkowski_radius) return true; 
+    }
+
+    return false;
+}
+
+static bool test_path_stroke_hit(sprawl_stroke *s, const double a[2], const double b[2], double wr) {
+    double dx = b[0] - a[0];
+    double dy = b[1] - a[1];
+    uint32_t steps = (uint32_t)ceil(sqrt(dx*dx + dy*dy) / (wr * 0.5));
+    if (steps == 0) steps = 1;
+    for (uint32_t k = 1; k <= steps; k++) {
+        double t = (double)k / steps;
+        double p[2] = { a[0] + dx * t, a[1] + dy * t };
+        if (test_sample_stroke_hit(s, p, wr)) return true;
+    }
+
+    return false;
+}
+
+AppendSamplesResult engine_append_erase_samples(uint32_t sample_count) {
+    if (sample_count > MAX_SAMPLES) return AppendSamplesResult_BufferOverflow;
+    if (session.gesture != GestureKind_Erase) return AppendSamplesResult_NoOpenGesture;
+
+    sprawl_erase *e = &ARRAY_LAST(eng.doc->erases);
+    double wr = session.eraser_radius / camera.zoom;
+
+    for (uint32_t i = 0; i < sample_count; i++) {
+        double w[2];
+        screen_to_world(sample_buf[i].x, sample_buf[i].y, w);
+        if (!session.has_erase_prev) {
+            memcpy(session.erase_prev, w, sizeof(w));
+            session.has_erase_prev = true;
+        }
+
+        for (uint32_t si = 0; si < eng.doc->strokes.count; si++) {
+            sprawl_stroke *s = &eng.doc->strokes.data[si];
+            if (s->points_count == 0 || s->hidden_by > 0 || s->undo_len % 2 == 1) continue;
+            if (!test_path_stroke_hit(s, session.erase_prev, w, wr)) continue;
+
+            if (!sprawl_reserve_u32(&eng.doc->erase_targets, eng.doc->erase_targets.count + 1)) {
+                return AppendSamplesResult_MaxReached;
+            }
+
+            eng.doc->erase_targets.data[eng.doc->erase_targets.count++] = si;
+            s->hidden_by++;
+            e->target_count++;
+            dirty = true;
+        }
+
+        memcpy(session.erase_prev, w, sizeof(w));
+    }
+
+    return AppendSamplesResult_Success;
+}
+
+void engine_end_erase(void) {
+    if (session.gesture != GestureKind_Erase) return; 
+
+    sprawl_erase *e = &ARRAY_LAST(eng.doc->erases);
+
+    if (e->target_count == 0) {
+        eng.doc->erases.count--;
+    } else {
+        if (sprawl_reserve_history(&session.undo, session.undo.count + 1)) {
+            session.undo.data[session.undo.count++] = (sprawl_history){
+                HistoryKind_Erase,
+                eng.doc->erases.count-1,
+            };
+            session.redo.count = 0;
+        }
+    }
+
+    doc_revision++;
+
+    session.gesture = GestureKind_None;
+    dirty = true;
+}
+void engine_cancel_erase(void) {
+    if (session.gesture != GestureKind_Erase) return;
+
+    sprawl_erase *e = &ARRAY_LAST(eng.doc->erases);
+    for (uint32_t ti = 0; ti < e->target_count; ti++) {
+        uint32_t erase_target = eng.doc->erase_targets.data[e->first_target + ti];
+
+        // FIXME: assumption: erase_target always points to a valid stroke, because 
+        // strokes can never be deleted. (with collaboration, strokes can be reordered 
+        // so we'll need to revisit this?)
+        sprawl_stroke *s = &eng.doc->strokes.data[erase_target];
+        s->hidden_by--;
+    }
+    eng.doc->erase_targets.count = eng.doc->erases.data[--eng.doc->erases.count].first_target;
+
+    session.gesture = GestureKind_None;
     dirty = true;
 }
 
@@ -304,15 +459,15 @@ void engine_pan(float dx, float dy) {
 }
 
 void engine_zoom_at(float sx, float sy, double f) {
-    double wx = camera.center[0] + (sx - viewport.w / 2.0) / camera.zoom;
-    double wy = camera.center[1] + (sy - viewport.h / 2.0) / camera.zoom;
+    double w[2];
+    screen_to_world(sx, sy, w);
 
     camera.zoom *= f;
     if (camera.zoom < 1e-10) camera.zoom = 1e-10;
     if (camera.zoom > 1e10) camera.zoom = 1e10;
 
-    camera.center[0] = wx - (sx - viewport.w/ 2.0) / camera.zoom;
-    camera.center[1] = wy - (sy - viewport.h/ 2.0) / camera.zoom;
+    camera.center[0] = w[0] - (sx - viewport.w/ 2.0) / camera.zoom;
+    camera.center[1] = w[1] - (sy - viewport.h/ 2.0) / camera.zoom;
     
     dirty = true;
 }
@@ -433,7 +588,7 @@ bool engine_frame(void) {
     }
     for (uint32_t i = 0; i < eng.doc->strokes.count; i++) {
         sprawl_stroke *s = &eng.doc->strokes.data[i];
-        if (s->undo_len % 2 == 1) continue;
+        if (s->undo_len % 2 == 1 || s->hidden_by != 0) continue;
 
         double k = s->scale * camera.zoom;
         double ox = (s->origin[0] - camera.center[0]) * camera.zoom + (viewport.w / 2.0);
@@ -485,6 +640,11 @@ static float linear_to_srgb(float c) {
     return c <= LINEAR_CUTOFF ? c * SRGB_SLOPE : (1.0f + SRGB_OFFSET) * powf(c, 1.0f / SRGB_GAMMA) - SRGB_OFFSET;
 }
 
+void engine_set_eraser_radius(float px) {
+    if (px <= 0.0f || !isfinite(px)) return;
+    session.eraser_radius = px;
+}
+
 void engine_set_color(uint32_t r, uint32_t g, uint32_t b) {
     session.color[0] = srgb_to_linear((float)r / 255.0);
     session.color[1] = srgb_to_linear((float)g / 255.0);
@@ -503,13 +663,24 @@ void engine_set_background(uint32_t r, uint32_t g, uint32_t b) {
 }
 
 int engine_undo(void) {
-    if (session.undo.count == 0 || session.stroke_open) return -1;
-    if (!sprawl_reserve_u32(&session.redo, session.redo.count+1)) {
+    if (session.undo.count == 0 || session.gesture != GestureKind_None) return -1;
+    if (!sprawl_reserve_history(&session.redo, session.redo.count+1)) {
         // If we can't push to the redo stack, don't undo
         return -1;
     }
-    uint32_t undone = session.undo.data[--session.undo.count];
-    eng.doc->strokes.data[undone].undo_len++;
+    sprawl_history undone = session.undo.data[--session.undo.count];
+    if (undone.kind == HistoryKind_Stroke) {
+        eng.doc->strokes.data[undone.index].undo_len++;
+    } else if (undone.kind == HistoryKind_Erase) {
+        sprawl_erase *e = &eng.doc->erases.data[undone.index];
+        e->undo_len++;
+
+        for (uint32_t i = 0; i < e->target_count; i++) {
+            uint32_t erase_target = eng.doc->erase_targets.data[e->first_target + i];
+            sprawl_stroke *s = &eng.doc->strokes.data[erase_target];
+            s->hidden_by--;
+        }
+    }
 
     session.redo.data[session.redo.count++] = undone;
 
@@ -519,13 +690,24 @@ int engine_undo(void) {
 }
 
 int engine_redo(void) {
-    if (session.redo.count == 0 || session.stroke_open) return -1;
-    if (!sprawl_reserve_u32(&session.undo, session.undo.count+1)) {
+    if (session.redo.count == 0 || session.gesture != GestureKind_None) return -1;
+    if (!sprawl_reserve_history(&session.undo, session.undo.count+1)) {
         // If we can't push to the undo stack, don't redo
         return -1;
     }
-    uint32_t redone = session.redo.data[--session.redo.count];
-    eng.doc->strokes.data[redone].undo_len++;
+    sprawl_history redone = session.redo.data[--session.redo.count];
+    if (redone.kind == HistoryKind_Stroke) {
+        eng.doc->strokes.data[redone.index].undo_len++;
+    } else if (redone.kind == HistoryKind_Erase) {
+        sprawl_erase *e = &eng.doc->erases.data[redone.index];
+        e->undo_len++;
+
+        for (uint32_t i = 0; i < e->target_count; i++) {
+            uint32_t erase_target = eng.doc->erase_targets.data[e->first_target + i];
+            sprawl_stroke *s = &eng.doc->strokes.data[erase_target];
+            s->hidden_by++;
+        }
+    }
 
     session.undo.data[session.undo.count++] = redone;
 
@@ -586,9 +768,13 @@ bool engine_load_end(void) {
         new_session();
        
         if (eng.doc->strokes.count > 0) {
-            eng.doc->max_z = eng.doc->strokes.data[eng.doc->strokes.count-1].z;
+            eng.doc->max_z = ARRAY_LAST(eng.doc->strokes).z;
         } else {
             eng.doc->max_z = 0;
+        }
+       
+        if (eng.doc->erases.count > 0 && ARRAY_LAST(eng.doc->erases).z > eng.doc->max_z) {
+            eng.doc->max_z = ARRAY_LAST(eng.doc->erases).z;
         }
    
         for (uint32_t si = 0; si < eng.doc->strokes.count; si++) {
@@ -688,6 +874,7 @@ void engine_init(uint32_t w, uint32_t h) {
     renderer_init(target_buf, viewport.w, viewport.h);
 
     // arena_alloc(&arena);
+    session.eraser_radius = 10.0;
 }
 
 void engine_new_document(void) {
@@ -696,6 +883,8 @@ void engine_new_document(void) {
     eng.doc->id[1] = read_random_u64();
     eng.doc->strokes.count = 0;
     eng.doc->points.count = 0;
+    eng.doc->erases.count = 0;
+    eng.doc->erase_targets.count = 0;
     eng.doc->title_len = 0;
     eng.doc->max_z = 0;
 

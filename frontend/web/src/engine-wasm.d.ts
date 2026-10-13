@@ -2,9 +2,13 @@ export interface EngineModule {
     _engine_init(w: number, h: number): void;
     _engine_new_document(): void;
     _engine_begin_stroke(nowMs: number): number;
-    _engine_append_samples(sampleCount: number): number;
+    _engine_append_stroke_samples(sampleCount: number): number;
     _engine_end_stroke(): void;
     _engine_cancel_stroke(): void;
+    _engine_begin_erase(nowMs: number): number;
+    _engine_append_erase_samples(sampleCount: number): number;
+    _engine_end_erase(): void;
+    _engine_cancel_erase(): void;
     _engine_pan(dx: number, dy: number): void;
     _engine_zoom_at(sx: number, sy: number, f: number): void;
     _engine_set_camera(wx: number, wy: number, zoom: number): void;
@@ -15,6 +19,7 @@ export interface EngineModule {
     _engine_title(): number;
     _engine_set_title(n: number): number;
     _engine_frame(): number;
+    _engine_set_eraser_radius(radius: number): void;
     _engine_set_color(r: number, g: number, b: number): void;
     _engine_set_background(r: number, g: number, b: number): void;
     _engine_undo(): number;

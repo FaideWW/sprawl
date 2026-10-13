@@ -80,3 +80,13 @@ body {
     width: 100%;
     justify-content: space-between;
 }
+
+#eraser-cursor {
+    position: absolute;
+    border-radius: 50%;
+    box-sizing: border-box;
+    border: 1px solid #ddd;
+    pointer-events: none;
+    top:0;
+    left:0;
+}

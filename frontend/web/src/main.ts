@@ -22,9 +22,13 @@ import {
 declare global {
     interface Window {
         bench: (
-            drawFrames: number,
-            viewFrames: number,
-            setBaseline: boolean,
+            frames: number,
+            config?: {
+                setBaseline?: boolean;
+                drawFrames?: number;
+                viewFrames?: number;
+                eraseFrames?: number;
+            },
         ) => void;
         deleteAllDocuments: () => void;
     }
@@ -38,7 +42,9 @@ interface CanvasDims {
     sx: number;
 }
 
-type PointerMode = "none" | "drawing" | "panning";
+type PointerMode = "none" | "drawing" | "panning" | "erasing";
+type ToolMode = "draw" | "erase";
+type AppendAction = "draw" | "erase";
 
 const SAMPLE_FLOATS = 4;
 const MAX_SAMPLES = 256;
@@ -53,6 +59,7 @@ const bgColor = app.querySelector<HTMLInputElement>("#bg-color")!;
 const newDocButton = app.querySelector<HTMLButtonElement>("#new-document")!;
 const openFileUIButton = app.querySelector<HTMLButtonElement>("#open-file-ui")!;
 const docTitleInput = app.querySelector<HTMLInputElement>("#document-title")!;
+const eraseCursor = app.querySelector<HTMLDivElement>("#eraser-cursor")!;
 const sampleBuffer = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
 const selectorBuffer = engine._engine_target_buffer();
 
@@ -76,12 +83,17 @@ let pointerMode: PointerMode = "none";
 let spaceHeld = false;
 let lastX = 0;
 let lastY = 0;
-let strokeStartTime: number = 0;
-let maxReached = false;
+let gestureStartTime: number = 0;
+let maxStrokesReached = false;
+let maxErasesReached = false;
 let framePresented = false;
 let lastStatUpdate = 0;
 let debouncedSaveHandle = -1;
-let preBenchDocId: string | null = null;
+let eraseRadiusPx = 10;
+let cursorOffscreen = false;
+
+// FIXME: annoying hack to force the type to widen before we have UI to set this value
+let tool: ToolMode = "draw" as ToolMode;
 
 let pendingResize: { w: number; h: number } | null = null;
 
@@ -96,12 +108,14 @@ const resizeObserver = new ResizeObserver((entries) => {
         canvasDims.width = size.inlineSize;
         canvasDims.height = size.blockSize;
         canvasDims.sx = size.inlineSize / rect.width;
+
+        engine._engine_set_eraser_radius(eraseRadiusPx * canvasDims.sx);
     }
 });
 
 resizeObserver.observe(canvas);
 
-function appendEvents(events: PointerEvent[]): number {
+function appendEvents(events: PointerEvent[], action: AppendAction): number {
     for (let i = 0; i < events.length; i += MAX_SAMPLES) {
         const chunk = events.slice(i, i + MAX_SAMPLES);
         const heap = engine.HEAPF32;
@@ -114,12 +128,17 @@ function appendEvents(events: PointerEvent[]): number {
             heap[offset] = (e.clientX - canvasDims.left) * canvasDims.sx;
             heap[offset + 1] = (e.clientY - canvasDims.top) * canvasDims.sx;
             heap[offset + 2] = e.pressure;
-            heap[offset + 3] = e.timeStamp - strokeStartTime;
+            heap[offset + 3] = e.timeStamp - gestureStartTime;
             count++;
         }
 
         if (count > 0) {
-            const result = engine._engine_append_samples(count);
+            let result: number = 0;
+            if (action === "draw") {
+                result = engine._engine_append_stroke_samples(count);
+            } else if (action === "erase") {
+                result = engine._engine_append_erase_samples(count);
+            }
             if (result !== 0) return result;
         }
     }
@@ -142,25 +161,39 @@ function writeSamples(samples: number[][]) {
 
 let bench: Bench | null = null;
 window.bench = (
-    drawFrames: number,
-    viewFrames: number,
-    setBaseline = false,
+    frames: number,
+    {
+        drawFrames = frames,
+        viewFrames = frames,
+        eraseFrames = frames,
+        setBaseline = false,
+    } = {},
 ) => {
     if (bench) return;
     fileUI.hide();
-    preBenchDocId = getCurrentDocId();
-    openDocument(null).then(() => {
-        maxReached = false;
-        pointerMode = "none";
-        bench = createBench(
-            engine,
-            writeSamples,
-            canvasDims,
-            drawFrames,
-            viewFrames,
-            setBaseline,
-        );
-    });
+    const preBenchDocId = getCurrentDocId();
+    engine._engine_set_eraser_radius(10);
+    openDocument(null)
+        .then(() => {
+            maxStrokesReached = false;
+            pointerMode = "none";
+            bench = createBench(
+                engine,
+                writeSamples,
+                canvasDims,
+                drawFrames,
+                viewFrames,
+                eraseFrames,
+                setBaseline,
+            );
+            return bench.done;
+        })
+        .then(() => openDocument(preBenchDocId, { discardCurrent: true }))
+        .catch(() => openDocument(null, { discardCurrent: true }))
+        .finally(() => {
+            bench = null;
+            engine._engine_set_eraser_radius(eraseRadiusPx * canvasDims.sx);
+        });
 };
 
 window.deleteAllDocuments = () => {
@@ -173,6 +206,14 @@ window.deleteAllDocuments = () => {
     });
 };
 
+function handleEraseCursorVisibility() {
+    if ((tool === "erase" || pointerMode === "erasing") && !cursorOffscreen) {
+        eraseCursor.hidden = false;
+    } else {
+        eraseCursor.hidden = true;
+    }
+}
+
 function handleAppendSampleResult(resultCode: number) {
     switch (resultCode) {
         case 0:
@@ -180,8 +221,13 @@ function handleAppendSampleResult(resultCode: number) {
         case 1:
             {
                 // AppendSamplesResult_MaxReached
-                maxReached = true;
-                engine._engine_end_stroke();
+                if (pointerMode === "drawing") {
+                    maxStrokesReached = true;
+                    engine._engine_end_stroke();
+                } else if (pointerMode === "erasing") {
+                    maxErasesReached = true;
+                    engine._engine_end_erase();
+                }
                 activePointerId = null;
                 pointerMode = "none";
             }
@@ -195,7 +241,11 @@ function handleAppendSampleResult(resultCode: number) {
         case 3:
             {
                 // AppendSamplesResult_NoOpenStroke
-                console.error("drawing failed; no open stroke");
+                if (pointerMode === "drawing") {
+                    console.error("drawing failed; no open stroke");
+                } else if (pointerMode === "erasing") {
+                    console.error("erasing failed; no open erase");
+                }
                 activePointerId = null;
                 pointerMode = "none";
             }
@@ -204,14 +254,14 @@ function handleAppendSampleResult(resultCode: number) {
 }
 
 function handleBeginStroke(e: PointerEvent) {
-    if (maxReached === true) return;
-    strokeStartTime = e.timeStamp;
+    if (maxStrokesReached === true) return;
+    gestureStartTime = e.timeStamp;
     const beginStrokeResult = engine._engine_begin_stroke(Date.now());
     if (beginStrokeResult === 1) {
         // BeginStrokeResult_MaxReached
         engine._engine_end_stroke();
         activePointerId = null;
-        maxReached = true;
+        maxStrokesReached = true;
         pointerMode = "none";
         return;
     } else if (beginStrokeResult === 2) {
@@ -221,12 +271,45 @@ function handleBeginStroke(e: PointerEvent) {
         if (retryResult === 1) {
             engine._engine_end_stroke();
             activePointerId = null;
-            maxReached = true;
+            maxStrokesReached = true;
             pointerMode = "none";
             return;
         }
     }
-    handleAppendSampleResult(appendEvents([e]));
+    handleAppendSampleResult(appendEvents([e], "draw"));
+}
+
+function handleBeginErase(e: PointerEvent) {
+    if (maxErasesReached === true) return;
+    gestureStartTime = e.timeStamp;
+    const beginEraseResult = engine._engine_begin_erase(Date.now());
+    if (beginEraseResult === 1) {
+        // BeginGestureResult_MaxReached
+        engine._engine_end_erase();
+        activePointerId = null;
+        maxErasesReached = true;
+        pointerMode = "none";
+        handleEraseCursorVisibility();
+        return;
+    } else if (beginEraseResult === 2) {
+        // BeginGestureResult_HangingOpenGesture
+        // FIXME: HangingOpenGesture doesn't differentiate between
+        // strokes and erases; do we need to? how do we know which
+        // gesture to cancel?
+        engine._engine_cancel_erase();
+        const retryResult = engine._engine_begin_erase(Date.now());
+        if (retryResult === 1) {
+            engine._engine_end_erase();
+            activePointerId = null;
+            maxErasesReached = true;
+            pointerMode = "none";
+            handleEraseCursorVisibility();
+            return;
+        }
+    }
+
+    handleEraseCursorVisibility();
+    handleAppendSampleResult(appendEvents([e], "erase"));
 }
 
 document.addEventListener("visibilitychange", (e) => {
@@ -313,27 +396,33 @@ window.addEventListener("blur", () => {
     spaceHeld = false;
 });
 
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
 canvas.addEventListener("pointerdown", (e) => {
     if (bench) return;
-    if (pointerMode !== "none" || (e.button !== 0 && e.button !== 1)) return;
+    if (
+        pointerMode !== "none" ||
+        (e.button !== 0 && e.button !== 1 && (e.buttons & (2 | 32)) === 0)
+    ) {
+        return;
+    }
+
     lastX = e.clientX;
     lastY = e.clientY;
     activePointerId = e.pointerId;
     canvas.setPointerCapture(activePointerId);
-    switch (e.button) {
-        case 0: // LMB - draw
-            {
-                if (spaceHeld) return;
-                pointerMode = "drawing";
-                handleBeginStroke(e);
-            }
-            break;
-        case 1: // Middle - pan
-            {
-                e.preventDefault();
-                pointerMode = "panning";
-            }
-            break;
+    const erasing = tool === "erase" || (e.buttons & (2 | 32)) !== 0;
+    if (e.button === 1) {
+        e.preventDefault();
+        pointerMode = "panning";
+    } else if (erasing) {
+        if (spaceHeld) return;
+        pointerMode = "erasing";
+        handleBeginErase(e);
+    } else if (e.button === 0) {
+        if (spaceHeld) return;
+        pointerMode = "drawing";
+        handleBeginStroke(e);
     }
 });
 
@@ -341,6 +430,14 @@ canvas.addEventListener("pointerenter", (e) => {
     if (bench) return;
     lastX = e.clientX;
     lastY = e.clientY;
+
+    cursorOffscreen = false;
+    handleEraseCursorVisibility();
+});
+
+canvas.addEventListener("pointerleave", () => {
+    cursorOffscreen = true;
+    handleEraseCursorVisibility();
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -350,10 +447,21 @@ canvas.addEventListener("pointermove", (e) => {
     lastX = e.clientX;
     lastY = e.clientY;
 
+    // always update this so it appears in the right place
+    // no matter when we show or hide it
+    eraseCursor.style.transform = `translate(${e.clientX - eraseRadiusPx}px, ${e.clientY - eraseRadiusPx}px)`;
+
     const pointerOwned = e.pointerId === activePointerId;
     if (pointerMode === "drawing" && pointerOwned) {
-        if (maxReached === true) return;
-        handleAppendSampleResult(appendEvents(e.getCoalescedEvents?.() ?? [e]));
+        if (maxStrokesReached === true) return;
+        handleAppendSampleResult(
+            appendEvents(e.getCoalescedEvents?.() ?? [e], "draw"),
+        );
+    } else if (pointerMode === "erasing" && pointerOwned) {
+        if (maxErasesReached === true) return;
+        handleAppendSampleResult(
+            appendEvents(e.getCoalescedEvents?.() ?? [e], "erase"),
+        );
     } else if (
         (pointerMode === "panning" && pointerOwned) ||
         (spaceHeld && pointerMode !== "drawing")
@@ -368,25 +476,39 @@ canvas.addEventListener("pointerup", (e) => {
     if (pointerMode === "drawing") {
         engine._engine_end_stroke();
         debounce(() => enqueue(save), 1000);
+    } else if (pointerMode === "erasing") {
+        engine._engine_end_erase();
+        debounce(() => enqueue(save), 1000);
     }
     pointerMode = "none";
     activePointerId = null;
+    handleEraseCursorVisibility();
 });
 
 canvas.addEventListener("pointercancel", (e) => {
     if (bench) return;
     if (e.pointerId !== activePointerId) return;
-    if (pointerMode === "drawing") engine._engine_cancel_stroke();
+    if (pointerMode === "drawing") {
+        engine._engine_cancel_stroke();
+    } else if (pointerMode === "erasing") {
+        engine._engine_cancel_erase();
+    }
     pointerMode = "none";
     activePointerId = null;
+    handleEraseCursorVisibility();
 });
 
 canvas.addEventListener("lostpointercapture", (e) => {
     if (bench) return;
     if (e.pointerId !== activePointerId) return;
-    if (pointerMode === "drawing") engine._engine_cancel_stroke();
+    if (pointerMode === "drawing") {
+        engine._engine_cancel_stroke();
+    } else if (pointerMode === "erasing") {
+        engine._engine_cancel_erase();
+    }
     pointerMode = "none";
     activePointerId = null;
+    handleEraseCursorVisibility();
 });
 
 newDocButton.addEventListener("click", async () => {
@@ -469,13 +591,7 @@ function renderStep(now: number) {
         engine._engine_resize(pendingResize.w, pendingResize.h);
         pendingResize = null;
     }
-    if (bench?.step()) {
-        openDocument(preBenchDocId, { discardCurrent: true })
-            .catch(() => openDocument(null, { discardCurrent: true }))
-            .finally(() => {
-                bench = null;
-            });
-    }
+    bench?.step();
 
     const engineFrameStart = performance.now();
     framePresented = engine._engine_frame() === 1;
@@ -507,6 +623,12 @@ function renderStep(now: number) {
     requestAnimationFrame(renderStep);
 }
 
+// engine->frontend
+//  - background color
+//  - document title
+//
+// frontend->engine
+//  - stroke color
 function syncUI(): void {
     engine._engine_set_color(...parseHex(strokeColor.value));
     const engineBGColor = engine._engine_background_rgb();
@@ -551,6 +673,9 @@ function debounce(fn: () => unknown, timeout: number) {
 async function sprawlInit() {
     engine.stringToUTF8("#canvas", selectorBuffer, 256);
     engine._engine_init(canvas.width, canvas.height);
+
+    eraseCursor.style.width = `${eraseRadiusPx * 2}px`;
+    eraseCursor.style.height = `${eraseRadiusPx * 2}px`;
 
     await openDocument(localStorage.getItem(LAST_DOC_KEY)).catch(() =>
         openDocument(null),

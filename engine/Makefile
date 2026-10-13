@@ -14,9 +14,13 @@ EXPORTS := "[ \
 		   '_engine_init', \
 		   '_engine_new_document', \
 		   '_engine_begin_stroke', \
-		   '_engine_append_samples', \
+		   '_engine_append_stroke_samples', \
 		   '_engine_end_stroke', \
 		   '_engine_cancel_stroke', \
+		   '_engine_begin_erase', \
+		   '_engine_append_erase_samples', \
+		   '_engine_end_erase', \
+		   '_engine_cancel_erase', \
 		   '_engine_pan', \
 		   '_engine_zoom_at', \
 		   '_engine_set_camera', \
@@ -27,6 +31,7 @@ EXPORTS := "[ \
 		   '_engine_title', \
 		   '_engine_set_title', \
 		   '_engine_frame', \
+		   '_engine_set_eraser_radius', \
 		   '_engine_set_color', \
 		   '_engine_set_background', \
 		   '_engine_undo', \
