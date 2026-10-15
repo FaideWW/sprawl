@@ -13,6 +13,8 @@ endif
 EXPORTS := "[ \
 		   '_engine_init', \
 		   '_engine_new_document', \
+		   '_engine_renderer_status', \
+		   '_engine_renderer_reinit', \
 		   '_engine_begin_stroke', \
 		   '_engine_append_stroke_samples', \
 		   '_engine_end_stroke', \

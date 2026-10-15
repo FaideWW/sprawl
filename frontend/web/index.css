@@ -31,12 +31,25 @@ body {
 }
 
 #stats {
-    float: right;
-    display: inline-block;
+    position: fixed;
+    background-color: #333;
+    color: #ccc;
+    bottom: 0;
+    right: 0;
+    left: 0;
     text-align: right;
+    pointer-events: none;
+
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
 }
 
 #colors {
+    display: inline-block;
+}
+
+#eraser {
     display: inline-block;
 }
 
@@ -89,4 +102,16 @@ body {
     pointer-events: none;
     top:0;
     left:0;
+}
+
+.centered-overlay {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    min-width: 300px;
+    background-color: #333;
+    border: 1px solid #bbb;
+    padding: 2px;
+    color: #ccc;
 }

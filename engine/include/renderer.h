@@ -53,6 +53,7 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
 */
 int renderer_gpu_time_ns(uint64_t *ns);
 
+void renderer_reinit();
 RendererStatus renderer_status(void);
 
 #endif

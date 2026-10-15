@@ -33,6 +33,8 @@ static struct {
     uint64_t storage_buffer_size_limit;
     int frames_in_flight;
 
+    uint32_t generation;
+
     // timestamps 
     bool has_timestamps;
     WGPUQuerySet ts_qs;
@@ -56,15 +58,17 @@ static void handle_init_resources_error_scope(
     WGPU_NULLABLE void *userdata2
 ) {
     UNUSED(status);
-    UNUSED(userdata1);
     UNUSED(userdata2);
+    if ((uintptr_t)userdata1 != r.generation) return;
     if (type != WGPUErrorType_NoError) {
         r.status = RendererStatus_Error;
         log_error(message);
         return;
     }
-    r.status = RendererStatus_Ready;
-    printf("render backend ready\n");
+    if (r.status == RendererStatus_Uninitialized) {
+        r.status = RendererStatus_Ready;
+        printf("render backend ready\n");
+    }
 }
 
 static void handle_device_devicelost(
@@ -75,11 +79,12 @@ static void handle_device_devicelost(
     WGPU_NULLABLE void *userdata2
 ) {
     UNUSED(device);
-    UNUSED(reason);
-    UNUSED(userdata1);
     UNUSED(userdata2);
-    r.status = RendererStatus_Error;
-    log_error(message);
+    if ((uintptr_t)userdata1 != r.generation) return;
+    if (reason != WGPUDeviceLostReason_Destroyed) {
+        r.status = RendererStatus_Error;
+        log_error(message);
+    }
 }
 
 static void handle_device_uncapturederror(
@@ -90,9 +95,11 @@ static void handle_device_uncapturederror(
     WGPU_NULLABLE void *userdata2
 ) {
     UNUSED(device);
-    UNUSED(type);
-    UNUSED(userdata1);
     UNUSED(userdata2);
+    if ((uintptr_t)userdata1 != r.generation) return;
+    if (type == WGPUErrorType_OutOfMemory) {
+        r.status = RendererStatus_Error;
+    }
     log_error(message);
 }
 
@@ -104,8 +111,8 @@ static void handle_queue_work_done(
 ) {
     UNUSED(status);
     UNUSED(message);
-    UNUSED(userdata1);
     UNUSED(userdata2);
+    if ((uintptr_t)userdata1 != r.generation) return;
     r.frames_in_flight--;
 }
 
@@ -115,8 +122,8 @@ static void handle_timestamp_readback_buffer_map(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
-    UNUSED(userdata1);
     UNUSED(userdata2);
+    if ((uintptr_t)userdata1 != r.generation) return;
     if (status != WGPUMapAsyncStatus_Success) {
         log_error(message);
         r.ts_readback_pending = false;
@@ -301,8 +308,8 @@ static void handle_device_request(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
-    UNUSED(userdata1);
     UNUSED(userdata2);
+    if ((uintptr_t)userdata1 != r.generation) return;
     if (status != WGPURequestDeviceStatus_Success) {
         r.status = RendererStatus_Error;
         log_error(message);
@@ -348,6 +355,7 @@ static void handle_device_request(
     WGPUPopErrorScopeCallbackInfo error_cb = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
     error_cb.mode = WGPUCallbackMode_AllowSpontaneous;
     error_cb.callback = handle_init_resources_error_scope;
+    error_cb.userdata1 = (void *)(uintptr_t)r.generation;
     wgpuDevicePopErrorScope(r.device, error_cb);
 }
 
@@ -358,8 +366,8 @@ static void handle_adapter_request(
     WGPU_NULLABLE void *userdata1,
     WGPU_NULLABLE void *userdata2
 ) {
-    UNUSED(userdata1);
     UNUSED(userdata2);
+    if ((uintptr_t)userdata1 != r.generation) return;
     if (status != WGPURequestAdapterStatus_Success) {
         r.status = RendererStatus_Error;
         log_error(message);
@@ -372,9 +380,11 @@ static void handle_adapter_request(
     WGPUDeviceLostCallbackInfo devicelost_cb = WGPU_DEVICE_LOST_CALLBACK_INFO_INIT;
     devicelost_cb.callback = handle_device_devicelost;
     devicelost_cb.mode = WGPUCallbackMode_AllowSpontaneous;
+    devicelost_cb.userdata1 = (void *)(uintptr_t)r.generation;
 
     WGPUUncapturedErrorCallbackInfo uncapturederror_cb = WGPU_UNCAPTURED_ERROR_CALLBACK_INFO_INIT;
     uncapturederror_cb.callback = handle_device_uncapturederror;
+    uncapturederror_cb.userdata1 = (void *)(uintptr_t)r.generation;
 
     WGPUDeviceDescriptor device_desc = WGPU_DEVICE_DESCRIPTOR_INIT;
     device_desc.label = (WGPUStringView){ "test device", WGPU_STRLEN };
@@ -411,11 +421,24 @@ static void handle_adapter_request(
     WGPURequestDeviceCallbackInfo request_cb = WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
     request_cb.callback = handle_device_request;
     request_cb.mode = WGPUCallbackMode_AllowSpontaneous;
+    request_cb.userdata1 = (void *)(uintptr_t)r.generation;
 
     wgpuAdapterRequestDevice(adapter, &device_desc, request_cb);
 }
 
+static void request_adapter(void) {
+    WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+    options.compatibleSurface = r.surface;
+
+    WGPURequestAdapterCallbackInfo cb = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
+    cb.callback = handle_adapter_request;
+    cb.mode = WGPUCallbackMode_AllowSpontaneous;
+    cb.userdata1 = (void *)(uintptr_t)r.generation;
+    wgpuInstanceRequestAdapter(r.instance, &options, cb);
+}
+
 void renderer_init(const void *target, uint32_t width, uint32_t height) {
+    r.status = RendererStatus_Uninitialized;
     r.width = width;
     r.height = height;
 
@@ -454,13 +477,7 @@ void renderer_init(const void *target, uint32_t width, uint32_t height) {
 
     r.surface = surface;
 
-    WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-    options.compatibleSurface = surface;
-
-    WGPURequestAdapterCallbackInfo cb = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-    cb.callback = handle_adapter_request;
-    cb.mode = WGPUCallbackMode_AllowSpontaneous;
-    wgpuInstanceRequestAdapter(instance, &options, cb);
+    request_adapter();
 }
 
 void renderer_resize(uint32_t w, uint32_t h) {
@@ -501,6 +518,7 @@ static bool grow_and_copy_point_buffer(uint32_t requested_points) {
     wgpuQueueSubmit(r.queue, 1, &cmd);
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(enc);
+    wgpuBufferDestroy(r.point_buf);
     wgpuBufferRelease(r.point_buf);
 
     r.point_buf = bigger;
@@ -524,6 +542,7 @@ static bool grow_stroke_buffer(uint32_t requested_strokes) {
     desc.size = sizeof(sprawl_rendered_stroke) * cap;
     desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
     WGPUBuffer bigger = wgpuDeviceCreateBuffer(r.device, &desc);
+    wgpuBufferDestroy(r.stroke_buf);
     wgpuBufferRelease(r.stroke_buf);
 
     r.stroke_buf = bigger;
@@ -639,12 +658,14 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     WGPUQueueWorkDoneCallbackInfo work_done_cb = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
     work_done_cb.mode = WGPUCallbackMode_AllowSpontaneous;
     work_done_cb.callback = handle_queue_work_done;
+    work_done_cb.userdata1 = (void *)(uintptr_t)r.generation;
     wgpuQueueOnSubmittedWorkDone(r.queue, work_done_cb);
 
     if (copied) {
         WGPUBufferMapCallbackInfo readback_cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
         readback_cb.mode = WGPUCallbackMode_AllowSpontaneous;
         readback_cb.callback = handle_timestamp_readback_buffer_map;
+        readback_cb.userdata1 = (void *)(uintptr_t)r.generation;
         wgpuBufferMapAsync(r.ts_readback_buf, WGPUMapMode_Read, 0, 16, readback_cb);
         r.ts_readback_pending = true;
     }
@@ -655,7 +676,73 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
     return 0;
 }
 
+static void teardown(void) {
+    if (r.uniform_buf) { 
+        wgpuBufferDestroy(r.uniform_buf);
+        wgpuBufferRelease(r.uniform_buf);
+        r.uniform_buf = NULL;
+    }
+    if (r.point_buf) { 
+        wgpuBufferDestroy(r.point_buf);
+        wgpuBufferRelease(r.point_buf);
+        r.point_buf = NULL;
+    }
+    if (r.stroke_buf) { 
+        wgpuBufferDestroy(r.stroke_buf);
+        wgpuBufferRelease(r.stroke_buf);
+        r.stroke_buf = NULL;
+    }
+    if (r.ts_resolve_buf) { 
+        wgpuBufferDestroy(r.ts_resolve_buf);
+        wgpuBufferRelease(r.ts_resolve_buf);
+        r.ts_resolve_buf = NULL;
+    }
+    if (r.ts_readback_buf) { 
+        wgpuBufferDestroy(r.ts_readback_buf);
+        wgpuBufferRelease(r.ts_readback_buf);
+        r.ts_readback_buf = NULL;
+    }
 
+    if (r.ts_qs) {
+        wgpuQuerySetDestroy(r.ts_qs);
+        wgpuQuerySetRelease(r.ts_qs);
+        r.ts_qs = NULL;
+    }
+
+    if (r.bind_group) { 
+        wgpuBindGroupRelease(r.bind_group); 
+        r.bind_group = NULL;
+    }
+    if (r.pipeline) { 
+        wgpuRenderPipelineRelease(r.pipeline); 
+        r.pipeline = NULL;
+    }
+    if (r.queue) { 
+        wgpuQueueRelease(r.queue); 
+        r.queue = NULL;
+    }
+    if (r.device) { 
+        wgpuDeviceRelease(r.device); 
+        r.device = NULL;
+    }
+    if (r.adapter) { 
+        wgpuAdapterRelease(r.adapter); 
+        r.adapter = NULL;
+    }
+
+
+
+    r.frames_in_flight = 0;
+    r.ts_readback_pending = false;
+    r.has_gpu_time = false;
+}
+
+void renderer_reinit(void) {
+    teardown();
+    r.generation++;
+    r.status = RendererStatus_Uninitialized;
+    request_adapter();
+}
 
 RendererStatus renderer_status(void) {
     return r.status;

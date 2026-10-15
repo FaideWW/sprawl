@@ -1,6 +1,8 @@
 export interface EngineModule {
     _engine_init(w: number, h: number): void;
     _engine_new_document(): void;
+    _engine_renderer_status(): number;
+    _engine_renderer_reinit(): void;
     _engine_begin_stroke(nowMs: number): number;
     _engine_append_stroke_samples(sampleCount: number): number;
     _engine_end_stroke(): void;

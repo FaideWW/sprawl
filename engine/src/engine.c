@@ -901,6 +901,16 @@ void engine_new_document(void) {
     dirty = true;
 }
 
+RendererStatus engine_renderer_status(void) {
+    return renderer_status();
+}
+
+void engine_renderer_reinit(void) {
+    renderer_reinit();
+    uploaded_points = 0;
+    dirty = true;
+}
+
 uint32_t engine_point_count(void) { return eng.doc->points.count; }
 uint32_t engine_stroke_count(void) { return eng.doc->strokes.count; }
 uint32_t engine_point_max(void) { return eng.doc->points.cap; }

@@ -51,6 +51,9 @@ const MAX_SAMPLES = 256;
 const ZOOM_FACTOR = 0.002;
 const STATS_UPDATES_PER_SEC = 4;
 
+const RENDERER_READY = 1;
+const RENDERER_ERROR = 2;
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const canvas = app.querySelector<HTMLCanvasElement>("#canvas")!;
 const stats = app.querySelector<HTMLDivElement>("#stats")!;
@@ -59,15 +62,24 @@ const bgColor = app.querySelector<HTMLInputElement>("#bg-color")!;
 const newDocButton = app.querySelector<HTMLButtonElement>("#new-document")!;
 const openFileUIButton = app.querySelector<HTMLButtonElement>("#open-file-ui")!;
 const docTitleInput = app.querySelector<HTMLInputElement>("#document-title")!;
+const eraserSize = app.querySelector<HTMLInputElement>("#eraser-size")!;
 const eraseCursor = app.querySelector<HTMLDivElement>("#eraser-cursor")!;
+const renderRetryMessage = app.querySelector<HTMLDivElement>(
+    "#render-retry-message",
+)!;
+const renderFailedMessage = app.querySelector<HTMLDivElement>(
+    "#render-failed-message",
+)!;
 const sampleBuffer = engine._engine_sample_buffer() >> 2; // byte pointer with a 32-bit index
 const selectorBuffer = engine._engine_target_buffer();
 
 const fileUI = createFileUI({ openDocument, deleteDocument });
 
+const rendererRetrySchedule = [0, 5, 15, 30, 60, 120];
 const frametimeBuffer = createTimingBuffer(30);
 const engineFrametimeBuffer = createTimingBuffer(30);
 const gpuFrametimeBuffer = createTimingBuffer(30);
+let nextRendererReinit = 0;
 let lastFrameTime = 0;
 
 const canvasDims: CanvasDims = {
@@ -89,8 +101,11 @@ let maxErasesReached = false;
 let framePresented = false;
 let lastStatUpdate = 0;
 let debouncedSaveHandle = -1;
-let eraseRadiusPx = 10;
+let eraseRadiusPx = Number(eraserSize.value);
 let cursorOffscreen = false;
+
+let rendererReiniting = false;
+let rendererFailed = false;
 
 // FIXME: annoying hack to force the type to widen before we have UI to set this value
 let tool: ToolMode = "draw" as ToolMode;
@@ -342,7 +357,7 @@ window.addEventListener(
 
 window.addEventListener("keydown", (e) => {
     if (bench) return;
-    if (e.target instanceof HTMLInputElement) return;
+    if (e.target === docTitleInput) return;
     switch (e.key.toLowerCase()) {
         case " ":
             {
@@ -449,7 +464,7 @@ canvas.addEventListener("pointermove", (e) => {
 
     // always update this so it appears in the right place
     // no matter when we show or hide it
-    eraseCursor.style.transform = `translate(${e.clientX - eraseRadiusPx}px, ${e.clientY - eraseRadiusPx}px)`;
+    eraseCursor.style.transform = `translate(${e.clientX}px, ${e.clientY}px) translate(-50%, -50%)`;
 
     const pointerOwned = e.pointerId === activePointerId;
     if (pointerMode === "drawing" && pointerOwned) {
@@ -546,6 +561,15 @@ bgColor.addEventListener("input", () => {
     debounce(() => enqueue(save), 1000);
 });
 
+eraserSize.addEventListener("input", () => {
+    eraseRadiusPx = Number(eraserSize.value);
+    resizeEraseCursor(eraseRadiusPx);
+
+    if (!bench) {
+        engine._engine_set_eraser_radius(eraseRadiusPx * canvasDims.sx);
+    }
+});
+
 openFileUIButton.addEventListener("click", () => {
     if (bench) return;
     fileUI.show();
@@ -583,7 +607,7 @@ function updateStats() {
 
     const fps = `fps: ${avgFPS} ft:${avgFT} eng:${avgEngine} gpu:${avgGPU}`;
 
-    stats.innerHTML = `${pointsStr}<br />${strokesStr}<br />${renderingStr}<br />${fps}`;
+    stats.innerHTML = `<span>${pointsStr}</span><span>${strokesStr}</span><span>${renderingStr}</span><span>${fps}</span>`;
 }
 
 function renderStep(now: number) {
@@ -591,6 +615,33 @@ function renderStep(now: number) {
         engine._engine_resize(pendingResize.w, pendingResize.h);
         pendingResize = null;
     }
+    const rendererStatus = engine._engine_renderer_status();
+    if (
+        rendererStatus === RENDERER_ERROR &&
+        !rendererReiniting &&
+        !rendererFailed
+    ) {
+        if (nextRendererReinit < rendererRetrySchedule.length) {
+            rendererReiniting = true;
+            renderRetryMessage.hidden = false;
+            window.setTimeout(
+                () => {
+                    engine._engine_renderer_reinit();
+                    rendererReiniting = false;
+                },
+                (rendererRetrySchedule[nextRendererReinit] ?? 0) * 1000,
+            );
+            nextRendererReinit++;
+        } else {
+            rendererFailed = true;
+            renderRetryMessage.hidden = true;
+            renderFailedMessage.hidden = false;
+        }
+    } else if (rendererStatus === RENDERER_READY && nextRendererReinit > 0) {
+        renderRetryMessage.hidden = true;
+        nextRendererReinit = 0;
+    }
+
     bench?.step();
 
     const engineFrameStart = performance.now();
@@ -670,12 +721,16 @@ function debounce(fn: () => unknown, timeout: number) {
     }, timeout);
 }
 
+function resizeEraseCursor(r: number) {
+    eraseCursor.style.width = `${r * 2}px`;
+    eraseCursor.style.height = `${r * 2}px`;
+}
+
 async function sprawlInit() {
     engine.stringToUTF8("#canvas", selectorBuffer, 256);
     engine._engine_init(canvas.width, canvas.height);
 
-    eraseCursor.style.width = `${eraseRadiusPx * 2}px`;
-    eraseCursor.style.height = `${eraseRadiusPx * 2}px`;
+    resizeEraseCursor(eraseRadiusPx);
 
     await openDocument(localStorage.getItem(LAST_DOC_KEY)).catch(() =>
         openDocument(null),
