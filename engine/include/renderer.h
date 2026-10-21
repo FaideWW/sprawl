@@ -2,16 +2,13 @@
 #define RENDERER_H_
 #include <stdbool.h>
 #include <stdint.h>
+#include "sprawl_types.h"
 
 typedef enum RendererStatus {
     RendererStatus_Uninitialized = 0,
     RendererStatus_Ready = 1,
     RendererStatus_Error = 2
 } RendererStatus;
-
-typedef struct {
-    float x, y, p;
-} sprawl_point;
 
 
 typedef struct {
@@ -53,7 +50,7 @@ int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const 
 */
 int renderer_gpu_time_ns(uint64_t *ns);
 
-void renderer_reinit();
+void renderer_reinit(void);
 RendererStatus renderer_status(void);
 
 #endif

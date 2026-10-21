@@ -10,7 +10,6 @@
 #include "engine.h"
 #include "renderer.h"
 #include "serialize.h"
-// #include "arena.h"
 
 #define MAX_SELECTOR_LEN 256
 #define MAX_SAMPLES 256
@@ -36,8 +35,6 @@ static size_t random_bytes_used;
 static uint8_t random_buf[MAX_RANDOM_BYTES];
 static uint8_t io_buf[IO_CAPACITY];
 static uint8_t title_buf[MAX_TITLE_LEN + 1];
-
-// static sprawl_arena arena;
 
 static sprawl_doc_header listed;
 static sprawl_doc_decoder decoder;
@@ -577,7 +574,6 @@ ValidateTitleResult engine_set_title(uint32_t len) {
 }
 
 bool engine_frame(void) {
-    // arena_clear(&arena);
     if (!dirty || !renderer_can_frame()) return false;
 
     // WARN: the strokes need to be sorted by (z, id) to be drawn in the correct order.
@@ -873,7 +869,6 @@ void engine_init(uint32_t w, uint32_t h) {
     eng.doc = &documents[0];
     renderer_init(target_buf, viewport.w, viewport.h);
 
-    // arena_alloc(&arena);
     session.eraser_radius = 10.0;
 }
 

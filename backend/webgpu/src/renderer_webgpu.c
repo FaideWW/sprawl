@@ -169,8 +169,8 @@ static ConfigureSurfaceResult configure_surface(void) {
 
 static void write_uniforms(void) {
     uniform_buffer uniform_data = {0};
-    uniform_data.viewport[0] = r.width;
-    uniform_data.viewport[1] = r.height;
+    uniform_data.viewport[0] = (float)r.width;
+    uniform_data.viewport[1] = (float)r.height;
     wgpuQueueWriteBuffer(r.queue, r.uniform_buf, 0, &uniform_data, sizeof(uniform_buffer));
 }
 
