@@ -42,8 +42,9 @@ void page_header_write(uint8_t *page, const sprawl_page_header *header);
 
 void page_checksum_write(uint8_t *page);
 
-SprawlResult page_validate(const uint8_t *page, uint64_t page_num, PageKind kind,
-                           uint8_t table, uint64_t generation_max);
+SprawlResult page_checksum_verify(const uint8_t *page);
+SprawlResult page_header_verify(const uint8_t *page, uint64_t page_num, PageKind kind,
+                                uint8_t table, uint64_t generation_max);
 
 uint32_t crc32c(const uint8_t *data, size_t size);
 #endif // SPRAWL_PAGE_H_

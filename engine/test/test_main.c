@@ -10,6 +10,7 @@ int main(int argc, char **argv) {
 
     test_page();
     test_mem_io();
+    test_cache(seed);
     printf("ok\n");
     return 0;
 }

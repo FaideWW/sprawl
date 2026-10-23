@@ -42,13 +42,17 @@ void page_checksum_write(uint8_t *page) {
     put_u32le(page, checksum);
 }
 
-SprawlResult page_validate(const uint8_t *page, uint64_t page_num, PageKind kind, 
-                           uint8_t table, uint64_t generation_max) {
-    CHECK(kind != PageKind_Invalid);
+SprawlResult page_checksum_verify(const uint8_t *page) {
     uint32_t checksum = crc32c(page + 4, (PAGE_SIZE_BYTES - 4));
     if (get_u32le(page) != checksum) {
         return SprawlResult_Corrupt;
     }
+    return SprawlResult_OK;
+}
+
+SprawlResult page_header_verify(const uint8_t *page, uint64_t page_num, PageKind kind,
+                                uint8_t table, uint64_t generation_max) {
+    CHECK(kind != PageKind_Invalid);
 
     sprawl_page_header header;
     page_header_read(page, &header);

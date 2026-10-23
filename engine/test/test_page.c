@@ -57,47 +57,44 @@ static void test_page_validate(void) {
     CHECK(readback.generation == header.generation);
 
     // validates OK
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_OK);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 8) == SprawlResult_OK);
+    CHECK(page_checksum_verify(page) == SprawlResult_OK);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_OK);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 8) == SprawlResult_OK);
 
     // wrong expected values
-    CHECK(page_validate(page, 43, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
-    CHECK(page_validate(page, 42, PageKind_Branch, 1, 7) == SprawlResult_Corrupt);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 2, 7) == SprawlResult_Corrupt);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 6) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 43, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Branch, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 2, 7) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 6) == SprawlResult_Corrupt);
 
     // checksum invalid 
     page_make_valid(page, &header);
     page[100] ^= 0x01;
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_checksum_verify(page) == SprawlResult_Corrupt);
     
 
     // reserved bytes nonzero
     page_make_valid(page, &header);
     page[7] = 0x01;
-    page_checksum_write(page);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
     page_make_valid(page, &header);
     page[12] = 0x01;
-    page_checksum_write(page);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
     
     // all-zero page
     memset(page, 0, PAGE_SIZE_BYTES);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_checksum_verify(page) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
 
     // leaf nonzero level
     page_make_valid(page, &header);
     page[6] = 1;
-    page_checksum_write(page);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
 
     // leaf has no table
     page_make_valid(page, &header);
     page[5] = 0;
-    page_checksum_write(page);
-    CHECK(page_validate(page, 42, PageKind_Leaf, 0, 7) == SprawlResult_Corrupt);
-
+    CHECK(page_header_verify(page, 42, PageKind_Leaf, 0, 7) == SprawlResult_Corrupt);
 }
 
 void test_page(void) {
