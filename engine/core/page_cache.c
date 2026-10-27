@@ -158,6 +158,13 @@ uint8_t *cache_pin_new(sprawl_cache *c, uint64_t page_num) {
     return page;
 }
 
+uint8_t *cache_pinned(sprawl_cache *c, uint64_t page_num) {
+    uint32_t existing = cache_find(c, page_num);
+    CHECK(existing < c->slot_count);
+    CHECK(c->slots[existing].pinned == true);
+    return c->pages[existing];
+}
+
 static uint32_t slot_of(sprawl_cache *c, const uint8_t *page) {
     ptrdiff_t offset = (page - c->pages[0]);
     CHECK(offset >= 0);

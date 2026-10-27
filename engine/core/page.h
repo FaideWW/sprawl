@@ -1,9 +1,13 @@
 #ifndef SPRAWL_PAGE_H_
 #define SPRAWL_PAGE_H_
 
-#include "result.h"
+#if defined(__SSE4_2__)  && !defined(SPRAWL_CRC_SOFTWARE)
+#define SPRAWL_CRC_HARDWARE
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
+#include "result.h"
 
 /**
 *   PAGE HEADER FORMAT 
@@ -46,5 +50,11 @@ SprawlResult page_checksum_verify(const uint8_t *page);
 SprawlResult page_header_verify(const uint8_t *page, uint64_t page_num, PageKind kind,
                                 uint8_t table, uint64_t generation_max);
 
+uint32_t crc32c_sw(const uint8_t *data, size_t size);
+#ifdef SPRAWL_CRC_HARDWARE
+uint32_t crc32c_hw(const uint8_t *data, size_t size);
+#endif // SPRAWL_CRC_HARDWARE
+
 uint32_t crc32c(const uint8_t *data, size_t size);
+
 #endif // SPRAWL_PAGE_H_

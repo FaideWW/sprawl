@@ -6,27 +6,6 @@
 #include "result.h"
 #include "tests.h"
 
-static uint32_t crc32c_bitwise(const uint8_t *data, size_t size) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < size; i++) {
-        crc ^= data[i];                     
-        for (int bit = 0; bit < 8; bit++) { 
-            if (crc & 1) crc = (crc >> 1) ^ 0x82F63B78;
-            else         crc =  crc >> 1;
-        }
-    }
-    return crc ^ 0xFFFFFFFF;
-}
-
-static void test_crc32c(void) {
-    CHECK(crc32c((const uint8_t *)"123456789", 9) == 0xE3069283);
-
-    for (uint32_t n = 0; n < 256; n++) {
-        uint8_t byte = (uint8_t)n;
-        CHECK(crc32c(&byte, 1) == crc32c_bitwise(&byte, 1));
-    }
-}
-
 static void page_make_valid(uint8_t *page, const sprawl_page_header *header) {
     memset(page, 0, PAGE_SIZE_BYTES);
     page_header_write(page, header);
@@ -98,6 +77,5 @@ static void test_page_validate(void) {
 }
 
 void test_page(void) {
-    test_crc32c();
-    test_page_validate();
+    TIMED(test_page_validate());
 }

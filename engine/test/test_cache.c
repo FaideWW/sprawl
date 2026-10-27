@@ -23,7 +23,7 @@ static uint8_t pages[DOC_CACHE_SLOTS][PAGE_SIZE_BYTES];
 static sprawl_cache c;
 static mem_io m;
 
-static void test_init(uint64_t *rng) {
+static void test_cache_init(uint64_t *rng) {
     mem_io_init(&m, MEM_IO_PAGES_MAX);
     for (uint32_t i = 0; i < INITIAL_PAGES; i++) {
         sprawl_page_header h = {
@@ -102,7 +102,7 @@ static uint8_t *page_create(uint64_t *rng) {
 
 static void test_cache_random(uint64_t *rng) {
     _Static_assert(PINS_MAX + NEWS_MAX <= DOC_CACHE_SLOTS, "step must fit in the cache");
-    test_init(rng);
+    test_cache_init(rng);
 
     for (uint32_t step = 0; step < 700; step++) {
         uint64_t picked[PINS_MAX];
@@ -159,7 +159,7 @@ static void test_cache_random(uint64_t *rng) {
 }
 
 static void test_cache_all_dirty(uint64_t *rng) {
-    test_init(rng);
+    test_cache_init(rng);
 
     CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
     for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
@@ -176,7 +176,7 @@ static void test_cache_all_dirty(uint64_t *rng) {
 }
 
 static void test_cache_reserve_write_fail(uint64_t *rng) {
-    test_init(rng);
+    test_cache_init(rng);
 
     CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
     for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
@@ -195,7 +195,7 @@ static void test_cache_reserve_write_fail(uint64_t *rng) {
 }
 
 static void test_cache_pin_read_fail(uint64_t *rng) {
-    test_init(rng);
+    test_cache_init(rng);
 
     CHECK(cache_reserve(&c, 1) == SprawlResult_OK);
 
@@ -215,7 +215,7 @@ static void test_cache_pin_read_fail(uint64_t *rng) {
 }
 
 static void test_cache_corrupted_read(uint64_t *rng) {
-    test_init(rng);
+    test_cache_init(rng);
 
     uint32_t corrupt_page = rng_next(rng) % INITIAL_PAGES;
 
@@ -240,7 +240,7 @@ static void test_cache_corrupted_read(uint64_t *rng) {
 }
 
 static void test_cache_drop(uint64_t *rng) {
-    test_init(rng);
+    test_cache_init(rng);
 
     CHECK(cache_reserve(&c, 2) == SprawlResult_OK);
 
@@ -260,7 +260,7 @@ static void test_cache_drop(uint64_t *rng) {
 }
 
 static void test_cache_drop_all(uint64_t *rng) {
-    test_init(rng);
+    test_cache_init(rng);
 
     CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
     for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
@@ -288,11 +288,11 @@ static void test_cache_drop_all(uint64_t *rng) {
 }
 
 void test_cache(uint64_t seed) {
-    test_cache_random(&seed);
-    test_cache_all_dirty(&seed);
-    test_cache_reserve_write_fail(&seed);
-    test_cache_pin_read_fail(&seed);
-    test_cache_corrupted_read(&seed);
-    test_cache_drop(&seed);
-    test_cache_drop_all(&seed);
+    TIMED(test_cache_random(&seed));
+    TIMED(test_cache_all_dirty(&seed));
+    TIMED(test_cache_reserve_write_fail(&seed));
+    TIMED(test_cache_pin_read_fail(&seed));
+    TIMED(test_cache_corrupted_read(&seed));
+    TIMED(test_cache_drop(&seed));
+    TIMED(test_cache_drop_all(&seed));
 }

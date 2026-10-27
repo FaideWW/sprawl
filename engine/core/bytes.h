@@ -9,6 +9,8 @@
     fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
     abort(); } } while (0)
 
+// Little-endian
+//
 static inline uint64_t get_u64le(const uint8_t *b) {
     return ((uint64_t)(*(b + 7)) << 56 | 
             (uint64_t)(*(b + 6)) << 48 | 
@@ -55,4 +57,19 @@ static inline void put_u16le(uint8_t *b, uint16_t v) {
     b[1] = (uint8_t) (v >> 8);
 } 
 
+// Big-endian
+
+static inline uint32_t get_u32be(const uint8_t *b) {
+    return ((uint32_t)(*b) << 24 | 
+            (uint32_t)(*(b + 1)) << 16 | 
+            (uint32_t)(*(b + 2)) <<  8 | 
+            (uint32_t)(*(b + 3)));
+}
+
+static inline void put_u32be(uint8_t *b, uint32_t v) {
+    b[0] = (uint8_t) (v >> 24);
+    b[1] = (uint8_t) (v >> 16);
+    b[2] = (uint8_t) (v >> 8);
+    b[3] = (uint8_t) v;
+} 
 #endif

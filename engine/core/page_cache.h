@@ -44,6 +44,9 @@ SprawlResult cache_pin(sprawl_cache *c, uint64_t page_num, PageKind kind, uint8_
 // pins a new, empty page in the cache. returns a pointer to the new page
 uint8_t *cache_pin_new(sprawl_cache *c, uint64_t page_num);
 
+// returns an already-pinned page matching the requested page_num
+uint8_t *cache_pinned(sprawl_cache *c, uint64_t page_num);
+
 // marks a cached page as dirty
 void cache_mark_dirty(sprawl_cache *c, uint8_t *page);
 
@@ -61,5 +64,7 @@ SprawlResult cache_write_dirty(sprawl_cache *c);
 
 // frees every page
 void cache_drop_all(sprawl_cache *c);
+
+
 
 #endif // SPRAWL_PAGE_CACHE_H_

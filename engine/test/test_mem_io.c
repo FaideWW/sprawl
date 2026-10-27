@@ -26,5 +26,5 @@ static void mem_io_test_smoke(void) {
 }
 
 void test_mem_io(void) {
-    mem_io_test_smoke();
+    TIMED(mem_io_test_smoke());
 }

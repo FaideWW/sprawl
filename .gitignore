@@ -1,3 +1,7 @@
 build/
 .*
 !.gitignore
+
+gmon.out
+cg.out
+perf.data
