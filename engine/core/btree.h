@@ -35,24 +35,35 @@ typedef struct {
 // looks for the given key in the tree. writes `found` with the result of the search, 
 // and `value_out` if found is true. returns the underlying error if a cache retrieval fails,
 // or OK if successful.
-// The caller must cache_reserve at least `t->height` pages before calling get
-SprawlResult btree_get(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key, uint8_t *value_out, bool *found);
+// The caller must cache_reserve at least `t->height` pages before calling get.
+SprawlResult btree_get(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key, 
+                       uint8_t *value_out, bool *found);
+
+// finds the first entry with key >= `key`. writes `found` with the result of the search, 
+// and `key_out`/`value_out` if found is true. if traversal fails, returns the underlying error,
+// or OK if successful.
+// The caller must cache_reserve at least `2 * t->height` pages before calling seek.
+SprawlResult btree_seek(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key,
+                        uint8_t *key_out, uint8_t *value_out, bool *found);
 
 // computes the tree path where the new key will be inserted, and pins each page in the cache. 
 // returns the underlying error if pinning fails, or OK if successful.
 // The caller must cache_reserve at least `2 * t->height + 1` slots before calling insert_prepare.
 SprawlResult btree_insert_prepare(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key);
 
-// inserts the entry into the tree, rebalancing the tree if necessary. 
+// inserts the entry into the tree, splitting pages if necessary. If a root collapse is pending,
+// insert_apply will first perform this collapse, meaning it's possible for a tree to be smaller 
+// than it was before the call.
 // `btree_insert_prepare` must be called first
-void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const uint8_t *key, const uint8_t *value);
-
+void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const uint8_t *key, 
+                        const uint8_t *value);
 
 // computes the tree path where the key to be deleted exists, and pins each page in the cache.
-// writes `found` with whether the key is present in the tree or not.
-// returns the underlying error if pinning fails, or OK if successful.
-// The caller must cache_reserve at least `2 * t->height` slots before calling delete_prepare.
-SprawlResult btree_delete_prepare(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key, bool *found);
+// writes `found` with whether the key is present in the tree or not. returns the underlying 
+// error if pinning fails, or OK if successful.
+// The caller must cache_reserve at least `t->height` slots before calling delete_prepare.
+SprawlResult btree_delete_prepare(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key, 
+                                  bool *found);
 
 // deletes the key from the tree. Unlike insert, the tree is not rebalanced on delete.
 // `btree_delete_prepare` must be called first, and delete_apply must not be called if prepare 
