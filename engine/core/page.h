@@ -7,13 +7,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "bytes.h"
 #include "result.h"
 
 /**
 *   PAGE HEADER FORMAT 
 *   Offset   Size (bytes)   Field         Notes
 *   0        4              checksum      CRC32C over bytes [4,PAGE_SIZE)
-*   4        1              kind          superblock, bitmap, branch, leaf
+*   4        1              kind          superblock, freelist, branch, leaf
 *   5        1              table         table id
 *   6        1              level         0 = leaf 
 *   7        1              reserved      
@@ -24,10 +25,15 @@
 */ 
 #define PAGE_HEADER_SIZE_BYTES 32 
 
+#define PAGE_LEVEL(n) (uint8_t)(*((n)+6))
+#define PAGE_COUNT(n) (get_u16le((n) + 8))
+#define PAGE_PAGENUM(n) (get_u64le((n) + 16))
+#define PAGE_GENERATION(n) (get_u64le((n) + 24))
+
 typedef enum {
     PageKind_Invalid = 0,
     PageKind_Superblock = 1,
-    PageKind_Bitmap = 2,
+    PageKind_Freelist = 2,
     PageKind_Branch = 3,
     PageKind_Leaf = 4,
 } PageKind;

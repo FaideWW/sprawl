@@ -59,6 +59,46 @@ static SprawlResult mem_io_flush(void *ctx) {
     return SprawlResult_OK;
 }
 
+static void mem_io_submit(void *ctx, sprawl_io_request *req) {
+    mem_io *m = (mem_io *)ctx;
+    CHECK(m->request_queue_size < MEM_IO_QUEUE_MAX);
+    CHECK(req->op < IoOp_Max);
+    CHECK((req->op == IoOp_Read || req->op == IoOp_Write) == (req->page != NULL));
+    m->request_queue[m->request_queue_size++] = *req;
+}
+
+static void process_request(mem_io *m, const sprawl_io_request *req, sprawl_io_completion *out) {
+    out->tag = req->tag;
+    switch ((IoOp)req->op) {
+        case IoOp_Read: {
+            out->result = (uint8_t)mem_io_read(m, req->page_num, req->page);
+        } break;
+        case IoOp_Write: {
+            out->result = (uint8_t)mem_io_write(m, req->page_num, req->page);
+        } break;
+        case IoOp_Flush: {
+            out->result = (uint8_t)mem_io_flush(m);
+        } break;
+        default: {
+            CHECK(false);
+        } break;
+    }
+}
+
+static uint32_t mem_io_complete(void *ctx, sprawl_io_completion *out, uint32_t max) {
+    mem_io *m = (mem_io *)ctx;
+    uint32_t capped_max = (max > m->request_queue_size) ? m->request_queue_size : max;
+    for (uint32_t i = 0; i < capped_max; i++) {
+        process_request(m, &m->request_queue[i], &out[i]);
+    }
+
+    uint32_t remaining = m->request_queue_size - capped_max;
+    memmove(m->request_queue, m->request_queue + capped_max, remaining * sizeof(sprawl_io_request));
+    m->request_queue_size = remaining;
+
+    return capped_max;
+}
+
 void mem_io_init(mem_io *m, uint32_t pages_count) {
     CHECK(pages_count <= MEM_IO_PAGES_MAX);
     memset(m, 0, sizeof(mem_io));
@@ -68,9 +108,9 @@ void mem_io_init(mem_io *m, uint32_t pages_count) {
 sprawl_io mem_io_adapter(mem_io *m) {
     return (sprawl_io){ 
         .ctx = m, 
-        .read = mem_io_read, 
-        .write = mem_io_write, 
-        .flush = mem_io_flush,
+        .submit = mem_io_submit,
+        .complete = mem_io_complete,
+        .capacity = MEM_IO_QUEUE_MAX,
     };
 }
 
@@ -80,6 +120,16 @@ static void mem_io_tear(uint8_t *flushed, const uint8_t *written, uint64_t *rng)
 }
 
 void mem_io_crash(mem_io *m, uint64_t *rng) {
+    for (uint32_t i = 0; i < m->request_queue_size; i++) {
+        sprawl_io_request *r = &m->request_queue[i];
+        if (r->op == IoOp_Write && r->page_num < m->pages_count) {
+            memcpy(m->pages[r->page_num], r->page, PAGE_SIZE_BYTES);
+            m->unflushed[r->page_num] = true;
+        }
+    }
+
+    m->request_queue_size = 0;
+
     for (uint32_t i = 0; i < MEM_IO_PAGES_MAX; i++) {
         if (m->unflushed[i]) {
             switch (rng_next(rng) % 3) {

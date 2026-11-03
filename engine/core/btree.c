@@ -6,11 +6,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#define NODE_LEVEL(n) (uint8_t)(*((n)+6))
-#define NODE_COUNT(n) (get_u16le((n) + 8))
-#define NODE_PAGENUM(n) (get_u64le((n) + 16))
-#define NODE_GENERATION(n) (get_u64le((n) + 24))
-
 static void tree_check(const sprawl_tree *t) {
     CHECK(t->table != NULL);
     CHECK(t->table->id != 0);
@@ -36,8 +31,8 @@ static uint8_t *node_value(uint8_t *page, const sprawl_table *t, uint8_t level, 
 }
 
 static SprawlResult node_validate(const uint8_t *page, const sprawl_table *t, uint8_t level, uint32_t capacity) {
-    uint8_t page_level = NODE_LEVEL(page);
-    uint16_t page_count = NODE_COUNT(page);
+    uint8_t page_level = PAGE_LEVEL(page);
+    uint16_t page_count = PAGE_COUNT(page);
 
     if (page_level != level) return SprawlResult_Corrupt;
     if (page_count < 1 || page_count > capacity) return SprawlResult_Corrupt;
@@ -51,7 +46,7 @@ static SprawlResult node_validate(const uint8_t *page, const sprawl_table *t, ui
 }
 
 static bool leaf_find(uint8_t *page, const sprawl_table *t, const uint8_t *key, uint32_t *idx_out) {
-    uint16_t count = NODE_COUNT(page);
+    uint16_t count = PAGE_COUNT(page);
     const uint8_t *base = node_key(page, t, 0);
     uint32_t lo = 0;
     uint32_t hi = count;
@@ -73,7 +68,7 @@ static bool leaf_find(uint8_t *page, const sprawl_table *t, const uint8_t *key, 
 }
 
 static uint32_t branch_find(uint8_t *page, const sprawl_table *t, const uint8_t *key) {
-    uint16_t count = NODE_COUNT(page);
+    uint16_t count = PAGE_COUNT(page);
     const uint8_t *base = node_key(page, t, 0);
     uint32_t lo = 0;
     uint32_t hi = count;
@@ -172,7 +167,7 @@ SprawlResult btree_seek(sprawl_cache *c, const sprawl_tree *t, const uint8_t *ke
     if (walkdown_result != SprawlResult_OK) return walkdown_result;
 
     uint8_t *leaf = path[0];
-    uint16_t count = NODE_COUNT(leaf);
+    uint16_t count = PAGE_COUNT(leaf);
     uint32_t leaf_idx;
     leaf_find(leaf, t->table, key, &leaf_idx);
 
@@ -184,7 +179,7 @@ SprawlResult btree_seek(sprawl_cache *c, const sprawl_tree *t, const uint8_t *ke
     }
 
     uint8_t stop = 1;
-    while (stop < t->height && child_idx[stop] + 1 >= NODE_COUNT(path[stop])) {
+    while (stop < t->height && child_idx[stop] + 1 >= PAGE_COUNT(path[stop])) {
         stop++;
     }
 
@@ -213,15 +208,24 @@ SprawlResult btree_seek(sprawl_cache *c, const sprawl_tree *t, const uint8_t *ke
 SprawlResult btree_insert_prepare(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key) {
     tree_check(t);
     if (t->height == 0) return SprawlResult_OK;
-    if (t->height >= HEIGHT_MAX) return SprawlResult_TableFull;
     uint8_t *path[HEIGHT_MAX];
     uint32_t child_idx[HEIGHT_MAX];
-    return walk_and_pin(c, t, key, path, child_idx);
+    SprawlResult r = walk_and_pin(c, t, key, path, child_idx);
+    if (r != SprawlResult_OK || t->height < HEIGHT_MAX) return r;
+
+    // check if an insert will root split and increase the tree's height 
+    uint32_t idx;
+    if (leaf_find(path[0], t->table, key, &idx)) return SprawlResult_OK;
+    for (uint8_t level = 0; level < t->height; level++) {
+        if (PAGE_COUNT(path[level]) < node_cap(t->table, level)) return SprawlResult_OK;
+    }
+
+    return SprawlResult_TableFull;
 }
 
 static uint64_t page_make_changeable(sprawl_cache *c, sprawl_alloc *a, uint8_t *page) {
-    uint64_t gen = NODE_GENERATION(page);
-    uint64_t page_num = NODE_PAGENUM(page);
+    uint64_t gen = PAGE_GENERATION(page);
+    uint64_t page_num = PAGE_PAGENUM(page);
     CHECK(gen <= c->generation);
 
     if (gen == c->generation) {
@@ -239,9 +243,9 @@ static uint64_t page_make_changeable(sprawl_cache *c, sprawl_alloc *a, uint8_t *
 
 static void page_insert(sprawl_tree *t, uint8_t *page, uint32_t idx, const uint8_t *key, 
                         const uint8_t *value) {
-    uint8_t level = NODE_LEVEL(page);
+    uint8_t level = PAGE_LEVEL(page);
     uint32_t capacity = node_cap(t->table, level);
-    uint16_t count = NODE_COUNT(page);
+    uint16_t count = PAGE_COUNT(page);
     CHECK(idx <= count);
     CHECK(count < capacity);
     uint8_t *key_next = node_key(page, t->table, idx);
@@ -270,8 +274,8 @@ static uint64_t node_new(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, uint8
 }
 
 static void page_remove(sprawl_tree *t, uint8_t *page, uint32_t idx) {
-    uint8_t level = NODE_LEVEL(page);
-    uint16_t count = NODE_COUNT(page);
+    uint8_t level = PAGE_LEVEL(page);
+    uint16_t count = PAGE_COUNT(page);
     CHECK(idx < count);
     CHECK(count > 1);
     uint8_t *key_remove = node_key(page, t->table, idx);
@@ -316,7 +320,7 @@ static uint64_t page_split(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t,
 }
 
 static void page_free(sprawl_cache *c, sprawl_alloc *a, uint8_t *page) {
-    a->free_page(a->ctx, NODE_PAGENUM(page));
+    a->free_page(a->ctx, PAGE_PAGENUM(page));
     cache_drop(c, page);
 }
 
@@ -332,8 +336,8 @@ static void collapse_root(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t) {
     uint64_t page_num = t->root;
     uint8_t *page = cache_pinned(c, t->root);
 
-    while (t->height > 1 && NODE_COUNT(page) == 1) {
-        uint64_t child_page_num = get_u64le(node_value(page, t->table, NODE_LEVEL(page), 0));
+    while (t->height > 1 && PAGE_COUNT(page) == 1) {
+        uint64_t child_page_num = get_u64le(node_value(page, t->table, PAGE_LEVEL(page), 0));
         page_free(c, a, page);
         page = cache_pinned(c, child_page_num);
         page_num = child_page_num;
@@ -367,13 +371,13 @@ void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     uint8_t separator[KEY_SIZE_MAX];
     uint64_t right_page_num;
 
-    uint64_t old_page_num = NODE_PAGENUM(page);
+    uint64_t old_page_num = PAGE_PAGENUM(page);
     uint64_t new_page_num = page_make_changeable(c, a, page);
 
     if (found) {
         // change existing value
         memcpy(node_value(page, t->table, 0, idx), value, t->table->value_size);
-    } else if (NODE_COUNT(page) < node_cap(t->table, 0)) {
+    } else if (PAGE_COUNT(page) < node_cap(t->table, 0)) {
         // insert new value
         page_insert(t, page, idx, key, value);
     } else {
@@ -385,16 +389,16 @@ void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     for (uint8_t level = 1; level < t->height; level++) {
         if (new_page_num == old_page_num && !split) return;
         uint8_t *parent = path[level];
-        old_page_num = NODE_PAGENUM(parent);
+        old_page_num = PAGE_PAGENUM(parent);
         uint64_t new_parent_num = page_make_changeable(c, a, parent);
 
-        uint8_t *child_value = node_value(parent, t->table, NODE_LEVEL(parent), child_idx[level]);
+        uint8_t *child_value = node_value(parent, t->table, PAGE_LEVEL(parent), child_idx[level]);
         put_u64le(child_value, new_page_num);
 
         if (split) {
             uint8_t v[8];
             put_u64le(v, right_page_num);
-            if (NODE_COUNT(parent) < node_cap(t->table, level)) {
+            if (PAGE_COUNT(parent) < node_cap(t->table, level)) {
                 page_insert(t, parent, child_idx[level]+1, separator, v);
                 split = false;
             } else {
@@ -427,7 +431,7 @@ void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
 
 static uint8_t removal_level(const sprawl_tree *t, uint8_t *path[HEIGHT_MAX]) {
     uint8_t level = 0;
-    while (level < t->height && NODE_COUNT(path[level]) == 1) level++;
+    while (level < t->height && PAGE_COUNT(path[level]) == 1) level++;
     return level;
 }
 
@@ -474,12 +478,12 @@ void btree_delete_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     // simple removal
     uint32_t i = (stop == 0) ? idx : child_idx[stop];
 
-    uint64_t old_page_num = NODE_PAGENUM(path[stop]);
+    uint64_t old_page_num = PAGE_PAGENUM(path[stop]);
     uint64_t new_page_num = page_make_changeable(c, a, path[stop]);
     page_remove(t, path[stop], i);
     for (uint8_t level = stop + 1; level < t->height; level++) {
         if (new_page_num == old_page_num) return;
-        old_page_num = NODE_PAGENUM(path[level]);
+        old_page_num = PAGE_PAGENUM(path[level]);
         uint64_t new_parent_num = page_make_changeable(c, a, path[level]);
         put_u64le(node_value(path[level], t->table, level, child_idx[level]), new_page_num);
         new_page_num = new_parent_num;
@@ -488,47 +492,47 @@ void btree_delete_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     t->root = new_page_num;
 }
 
-typedef struct {
-    uint64_t page_num;
-    uint8_t level;
-    bool checked;
-    uint32_t next_child;
-    uint64_t gen_max;
-    bool has_lo;
-    bool has_hi;
-    uint8_t lo[KEY_SIZE_MAX];
-    uint8_t hi[KEY_SIZE_MAX];
-} check_frame;
-
-SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t, 
+SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t, btree_check_state *s, 
                          void (*visit)(void *, uint64_t), void *ctx, 
                          uint64_t *entries_out) {
-    *entries_out = 0;
     tree_check(t);
     if (t->height == 0) {
+        *entries_out = 0;
         return SprawlResult_OK;
     }
 
-    check_frame frames[HEIGHT_MAX];
-    uint8_t fp = 0;
-
-    frames[fp++] = (check_frame){
-        .page_num = t->root,
-        .level = t->height - 1,
-        .checked = false,
-        .next_child = 0, 
-        .gen_max = c->generation,
-        .has_lo = false,
-        .has_hi = false,
-    };
+    if (!s->started) {
+        s->entries = 0;
+        s->fp = 0;
+        s->frames[s->fp++] = (check_frame){
+            .page_num = t->root,
+            .level = t->height - 1,
+            .checked = false,
+            .next_child = 0, 
+            .gen_max = c->generation,
+            .has_lo = false,
+            .has_hi = false,
+        };
+        s->waiting = false;
+        s->started = true;
+    }
 
     SprawlResult r = SprawlResult_OK;
-    while (fp > 0) {
-        check_frame *f = &frames[fp-1];
-        r = cache_reserve(c, 1);
-        if (r != SprawlResult_OK) break;
+    while (s->fp > 0) {
+        check_frame *f = &s->frames[s->fp-1];
         uint8_t *page;
+
+        if (!s->waiting) {
+            r = cache_reserve(c, 1);
+            if (r != SprawlResult_OK) break;
+        }
+
         r = cache_pin(c, f->page_num, (f->level == 0) ? PageKind_Leaf : PageKind_Branch, t->table->id, &page);
+        if (r == SprawlResult_Pending) {
+            s->waiting = true;
+            return r;
+        }
+        s->waiting = false;
         if (r != SprawlResult_OK) break; 
 
         sprawl_page_header h;
@@ -558,20 +562,20 @@ SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t,
             }
 
             visit(ctx, f->page_num);
-            if (f->level == 0) *entries_out += h.count;
+            if (f->level == 0) s->entries += h.count;
             f->checked = true;
         }
 
         if (f->level == 0 || f->next_child == h.count) {
-            fp--;
+            s->fp--;
             cache_unpin_all(c);
             continue;
         }
 
         uint64_t child_page_num = get_u64le(node_value(page, t->table, f->level, f->next_child));
 
-        CHECK(fp < HEIGHT_MAX);
-        check_frame *child_frame = &frames[fp];
+        CHECK(s->fp < HEIGHT_MAX);
+        check_frame *child_frame = &s->frames[s->fp];
         child_frame->page_num = child_page_num;
         child_frame->level = f->level - 1;
         child_frame->checked = false;
@@ -598,10 +602,14 @@ SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t,
         f->next_child++;
 
         cache_unpin_all(c);
-        fp++;
+        s->fp++;
     }
 
 
     cache_unpin_all(c);
+    if (r != SprawlResult_Pending) {
+        s->started = false;
+        *entries_out = s->entries;
+    }
     return r;
 }   

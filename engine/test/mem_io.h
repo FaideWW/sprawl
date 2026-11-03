@@ -7,6 +7,7 @@
 #include "profile.h"
 
 #define MEM_IO_PAGES_MAX 4096 
+#define MEM_IO_QUEUE_MAX 256
 
 typedef struct {
     uint8_t pages[MEM_IO_PAGES_MAX][PAGE_SIZE_BYTES];
@@ -18,6 +19,9 @@ typedef struct {
     uint64_t fail_all_from_call;
     uint64_t reads, writes, flushes;
     uint64_t crash_kept, crash_dropped, crash_torn;
+    
+    sprawl_io_request request_queue[MEM_IO_QUEUE_MAX];
+    uint32_t request_queue_size;
 } mem_io;
 
 void mem_io_init(mem_io *m, uint32_t pages_count);

@@ -1,4 +1,5 @@
 #include "bytes.h"
+#include "io.h"
 #include "mem_io.h"
 #include "profile.h"
 #include "result.h"
@@ -17,12 +18,60 @@ static void mem_io_test_smoke(void) {
         page[i] = i % 2;
     }
 
-    CHECK(io.write(io.ctx, 0, page) == SprawlResult_OK);
+    sprawl_io_request r = {
+        .op = IoOp_Write,
+        .page_num = 0,
+        .page = page,
+        .tag = 0,
+    };
 
-    uint8_t readback[PAGE_SIZE_BYTES];
-    CHECK(io.read(io.ctx, 0, readback) == SprawlResult_OK);
-    
-    CHECK(memcmp(page, readback, PAGE_SIZE_BYTES) == 0);
+    uint8_t io_page[PAGE_SIZE_BYTES];
+    memcpy(io_page, m.pages[0], PAGE_SIZE_BYTES);
+
+    io.submit(io.ctx, &r);
+    CHECK(memcmp(m.pages[0], io_page, PAGE_SIZE_BYTES) == 0);
+
+    sprawl_io_completion c;
+    CHECK(io.complete(io.ctx, &c, 1) == 1);
+
+    CHECK(c.tag == 0);
+    CHECK(c.result == SprawlResult_OK);
+    CHECK(memcmp(m.pages[0], page, PAGE_SIZE_BYTES) == 0);
+
+    for (uint32_t i = 1; i < 4; i++) {
+        r = (sprawl_io_request){
+            .op = IoOp_Write,
+            .page_num = i,
+            .page = page,
+            .tag = i,
+        };
+        io.submit(io.ctx, &r);
+    }
+
+    sprawl_io_completion c2[3] = {0};
+    CHECK(io.complete(io.ctx, c2, 1) == 1);
+    CHECK(c2[0].tag == 1);
+    CHECK(m.request_queue_size == 2);
+
+    CHECK(io.complete(io.ctx, c2, 3) == 2);
+    CHECK(c2[0].tag == 2 && c2[1].tag == 3);
+
+    uint8_t readback[PAGE_SIZE_BYTES] = {0};
+    r = (sprawl_io_request){
+        .op = IoOp_Read,
+        .page_num = 0,
+        .page = readback,
+        .tag = 0,
+    };
+
+    io.submit(io.ctx, &r);
+    CHECK(memcmp(readback, page, PAGE_SIZE_BYTES) != 0);
+    CHECK(io.complete(io.ctx, &c, 1) == 1);
+
+    CHECK(c.tag == 0);
+    CHECK(c.result == SprawlResult_OK);
+    CHECK(memcmp(readback, page, PAGE_SIZE_BYTES) == 0);
+
 }
 
 void test_mem_io(void) {

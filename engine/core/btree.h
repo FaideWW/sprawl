@@ -1,9 +1,10 @@
 #ifndef SPRAWL_BTREE_H_
 #define SPRAWL_BTREE_H_
 
-#include "page_cache.h"
-#include "profile.h"
 #include <stdint.h>
+#include "alloc.h"
+#include "profile.h"
+#include "page_cache.h"
 
 #define HEIGHT_MAX 6 
 #define KEY_SIZE_MAX 64
@@ -27,10 +28,24 @@ typedef struct {
 } sprawl_tree;
 
 typedef struct {
-    void *ctx;
-    uint64_t (*alloc_page)(void *ctx);
-    void (*free_page)(void *ctx, uint64_t page_num);
-} sprawl_alloc;
+    uint64_t page_num;
+    uint8_t level;
+    bool checked;
+    uint32_t next_child;
+    uint64_t gen_max;
+    bool has_lo;
+    bool has_hi;
+    uint8_t lo[KEY_SIZE_MAX];
+    uint8_t hi[KEY_SIZE_MAX];
+} check_frame;
+
+typedef struct {
+    check_frame frames[HEIGHT_MAX];
+    uint8_t fp;
+    uint64_t entries;
+    bool started;
+    bool waiting;
+} btree_check_state;
 
 // looks for the given key in the tree. writes `found` with the result of the search, 
 // and `value_out` if found is true. returns the underlying error if a cache retrieval fails,
@@ -71,11 +86,14 @@ SprawlResult btree_delete_prepare(sprawl_cache *c, const sprawl_tree *t, const u
 void btree_delete_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const uint8_t *key);
 
 // full consistency check on the tree. calls `visit` once per page, and writes `entries_out`
-// with the total number of entries found. returns OK if the tree is consistent, Corrupt if 
-// not, or the underlying error if reservation or pinning fails
-// must not be called mid-step; check manages its own reservations, pinning and unpinning
-SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t, 
-                         void (*visit)(void *ctx, uint64_t page_num), void *ctx,
+// with the total number of entries found. The caller must provide a zeroed `btree_check_state`,
+// returns Pending if the check is waiting for an IO operation (the caller must retry after 
+// polling the cache), OK if the tree is consistent, Corrupt if not, or the underlying error 
+// if reservation or pinning fails.
+// The caller must not modify the tree until check returns a value that is not Pending.
+// must not be called mid-step; check manages its own reservations, pinning, and unpinning
+SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t, btree_check_state *s,
+                         void (*visit)(void *, uint64_t), void *ctx,
                          uint64_t *entries_out);
 
 #endif // SPRAWL_BTREE_H_

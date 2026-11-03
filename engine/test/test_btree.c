@@ -39,8 +39,11 @@ static uint32_t delete_order[ENTRY_COUNT];
 static uint32_t delete_next;
 
 static void commit(void) {
-    CHECK(cache_write_dirty(&c) == SprawlResult_OK);
-    CHECK(c.io.flush(c.io.ctx) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_write_dirty(&c));
+    CHECK(r == SprawlResult_OK);
+    RUN(&c, r, cache_flush(&c));
+    CHECK(r == SprawlResult_OK);
     c.generation++;
     simple_alloc_commit(&sa);
 }
@@ -53,8 +56,11 @@ static void check_all(uint32_t count) {
         put_u32le(v, values[i]);
         bool found;
         uint8_t value_out[TEST_VALUE_SIZE_BYTES];
-        CHECK(cache_reserve(&c, HEIGHT_MAX) == SprawlResult_OK); 
-        CHECK(btree_get(&c, &tree, k, value_out, &found) == SprawlResult_OK);
+        SprawlResult r;
+        RUN(&c, r, cache_reserve(&c, HEIGHT_MAX));
+        CHECK(r == SprawlResult_OK);
+        RUN(&c, r, btree_get(&c, &tree, k, value_out, &found));
+        CHECK(r == SprawlResult_OK);
 
         if (present[i]) {
             CHECK(found == true);
@@ -90,7 +96,10 @@ static uint64_t t_child(uint8_t *page, uint32_t i) {
 static SprawlResult run_check(uint64_t *entries) {
     cache_drop_all(&c);
     memset(reachable, 0, sizeof(reachable));
-    return btree_check(&c, &tree, visit, NULL, entries);
+    btree_check_state s = {0};
+    SprawlResult r;
+    RUN(&c, r, btree_check(&c, &tree, &s, visit, NULL, entries));
+    return r;
 }
 
 static bool alloc_matches_tree(void) {
@@ -131,10 +140,12 @@ static void insert_one(uint32_t key, uint32_t value) {
     uint8_t v[KEY_SIZE_MAX] = {0};
     put_u32be(k, key);
     put_u32le(v, value);
-    CHECK(cache_reserve(&c, (uint32_t)(2 * tree.height + 1)) == SprawlResult_OK); 
-    CHECK(btree_insert_prepare(&c, &tree, k) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, (uint32_t)(2 * tree.height + 1)));
+    CHECK(r == SprawlResult_OK);
+    RUN(&c, r, btree_insert_prepare(&c, &tree, k));
+    CHECK(r == SprawlResult_OK);
     btree_insert_apply(&c, &a, &tree, k, v);
-
     cache_unpin_all(&c);
 
     if (!present[key]) keys_in_tree++;
@@ -144,9 +155,12 @@ static void insert_one(uint32_t key, uint32_t value) {
 static void delete_one(uint32_t key) {
     uint8_t k[KEY_SIZE_MAX] = {0};
     put_u32be(k, key);
-    CHECK(cache_reserve(&c, tree.height) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, tree.height));
+    CHECK(r == SprawlResult_OK);
     bool found;
-    CHECK(btree_delete_prepare(&c, &tree, k, &found) == SprawlResult_OK);
+    RUN(&c, r, btree_delete_prepare(&c, &tree, k, &found));
+    CHECK(r == SprawlResult_OK);
     CHECK(found);
     btree_delete_apply(&c, &a, &tree, k);
     cache_unpin_all(&c);
@@ -300,8 +314,11 @@ static void scan_all(uint32_t entries_in_tree) {
     uint32_t seen = 0;
     bool more = true;
     while (more) {
-        CHECK(cache_reserve(&c, tree.height * 2) == SprawlResult_OK);
-        CHECK(btree_seek(&c, &tree, k, k_out, v, &found) == SprawlResult_OK);
+        SprawlResult r;
+        RUN(&c, r, cache_reserve(&c, tree.height * 2));
+        CHECK(r == SprawlResult_OK);
+        RUN(&c, r, btree_seek(&c, &tree, k, k_out, v, &found));
+        CHECK(r == SprawlResult_OK);
         cache_unpin_all(&c);
 
         uint32_t model_key = model_next(next);
@@ -335,7 +352,9 @@ static void test_btree_seek(uint64_t *rng) {
         uint8_t k[KEY_SIZE_MAX] = {0};
         uint8_t v[VALUE_SIZE_MAX] = {0};
 
-        CHECK(btree_seek(&c, &tree, k, k, v, &found) == SprawlResult_OK);
+        SprawlResult r;
+        RUN(&c, r, btree_seek(&c, &tree, k, k, v, &found));
+        CHECK(r == SprawlResult_OK);
         CHECK(!found);
     }
 
@@ -352,8 +371,11 @@ static void test_btree_seek(uint64_t *rng) {
             uint8_t key_out[KEY_SIZE_MAX] = {0};
             uint8_t value_out[VALUE_SIZE_MAX] = {0};
 
-            CHECK(cache_reserve(&c, tree.height * 2) == SprawlResult_OK);
-            CHECK(btree_seek(&c, &tree, k, key_out, value_out, &found) == SprawlResult_OK);
+            SprawlResult r;
+            RUN(&c, r, cache_reserve(&c, tree.height * 2));
+            CHECK(r == SprawlResult_OK);
+            RUN(&c, r, btree_seek(&c, &tree, k, key_out, value_out, &found));
+            CHECK(r == SprawlResult_OK);
             cache_unpin_all(&c);
 
             uint32_t key_received = get_u32be(key_out);
@@ -429,11 +451,14 @@ static void test_btree_delete(uint64_t *rng) {
         }
         CHECK(to_delete < ENTRY_COUNT);
 
-        CHECK(cache_reserve(&c, tree.height) == SprawlResult_OK);
+        SprawlResult r;
+        RUN(&c, r, cache_reserve(&c, tree.height));
+        CHECK(r == SprawlResult_OK);
         uint8_t key[KEY_SIZE_MAX] = {0};
         put_u32be(key, to_delete);
         bool found;
-        CHECK(btree_delete_prepare(&c, &tree, key, &found) == SprawlResult_OK);
+        RUN(&c, r, btree_delete_prepare(&c, &tree, key, &found));
+        CHECK(r == SprawlResult_OK);
         CHECK(!found);
         cache_unpin_all(&c);
         check_model();
@@ -501,7 +526,9 @@ static void test_btree_batched_ops(uint64_t *rng) {
         switch (op) {
         case 0: {
                 // insert
-                CHECK(cache_reserve(&c, batch_size * (uint32_t)(2 * tree.height + 1)) == SprawlResult_OK);
+                SprawlResult r;
+                RUN(&c, r, cache_reserve(&c, batch_size * (uint32_t)(2 * tree.height + 1)));
+                CHECK(r == SprawlResult_OK);
                 uint32_t new_keys[16];
                 uint32_t new_values[16];
 
@@ -510,7 +537,8 @@ static void test_btree_batched_ops(uint64_t *rng) {
                     new_values[i] = (uint32_t)rng_next(rng);
                     uint8_t k[KEY_SIZE_MAX] = {0};
                     put_u32be(k, new_keys[i]);
-                    CHECK(btree_insert_prepare(&c, &tree, k) == SprawlResult_OK);
+                    RUN(&c, r, btree_insert_prepare(&c, &tree, k));
+                    CHECK(r == SprawlResult_OK);
                 }
 
                 for (uint32_t i = 0; i < batch_size; i++) {
@@ -532,7 +560,9 @@ static void test_btree_batched_ops(uint64_t *rng) {
                 shuffle_deletes(rng);
                 if (batch_size > keys_in_tree) batch_size = keys_in_tree;
 
-                CHECK(cache_reserve(&c, batch_size * tree.height) == SprawlResult_OK);
+                SprawlResult r;
+                RUN(&c, r, cache_reserve(&c, batch_size * tree.height));
+                CHECK(r == SprawlResult_OK);
 
                 uint32_t to_delete[16];
                 for (uint32_t i = 0; i < batch_size; i++) {
@@ -540,7 +570,8 @@ static void test_btree_batched_ops(uint64_t *rng) {
                     uint8_t k[KEY_SIZE_MAX] = {0};
                     put_u32be(k, to_delete[i]);
                     bool found;
-                    CHECK(btree_delete_prepare(&c, &tree, k, &found) == SprawlResult_OK);
+                    RUN(&c, r, btree_delete_prepare(&c, &tree, k, &found));
+                    CHECK(r == SprawlResult_OK);
                     CHECK(found);
                 }
 
@@ -767,11 +798,14 @@ static void test_btree_random(uint64_t *rng) {
                 values[key] = (uint32_t)rng_next(rng);
                 insert_one(key, values[key]);
             } else {
-                CHECK(cache_reserve(&c, tree.height * 2) == SprawlResult_OK);
+                SprawlResult r;
+                RUN(&c, r, cache_reserve(&c, tree.height * 2));
+                CHECK(r == SprawlResult_OK);
                 uint8_t k[KEY_SIZE_MAX] = {0};
                 put_u32be(k, key);
                 bool found;
-                CHECK(btree_delete_prepare(&c, &tree, k, &found) == SprawlResult_OK);
+                RUN(&c, r, btree_delete_prepare(&c, &tree, k, &found));
+                CHECK(r == SprawlResult_OK);
                 CHECK(!found);
                 cache_unpin_all(&c);
             }

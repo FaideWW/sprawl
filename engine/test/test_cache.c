@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <string.h>
 
 #include "bytes.h"
@@ -43,6 +44,7 @@ static void test_cache_init(uint64_t *rng) {
         page_checksum_write(m.pages[i]);
 
         memcpy(model[i], m.pages[i], PAGE_SIZE_BYTES);
+        memcpy(m.flushed[i], m.pages[i], PAGE_SIZE_BYTES);
     }
 
     for (uint32_t i = 0; i < INITIAL_PAGES; i++) {
@@ -121,15 +123,18 @@ static void test_cache_random(uint64_t *rng) {
             if (!seen) distinct++;
         }
         
+        SprawlResult r;
         uint32_t new_count = (uint32_t)(rng_next(rng) % (NEWS_MAX + 1));
-        CHECK(cache_reserve(&c, distinct + new_count) == SprawlResult_OK);
+        RUN(&c, r, cache_reserve(&c, distinct + new_count));
+        CHECK(r == SprawlResult_OK);
 
         // prepare
         uint8_t *pinned[PINS_MAX];
         for (uint32_t i = 0; i < picked_count; i++) {
             sprawl_page_header h;
             page_header_read(model[picked[i]], &h);
-            CHECK(cache_pin(&c, picked[i], h.kind, h.table, &pinned[i]) == SprawlResult_OK);
+            RUN(&c, r, cache_pin(&c, picked[i], h.kind, h.table, &pinned[i]));
+            CHECK(r == SprawlResult_OK);
 
             CHECK(memcmp(pinned[i] + 4, model[picked[i]] + 4, PAGE_SIZE_BYTES - 4) == 0);
 
@@ -151,8 +156,10 @@ static void test_cache_random(uint64_t *rng) {
 
         // commit (25% chance)
         if (rng_next(rng) % 4 == 0) {
-            CHECK(cache_write_dirty(&c) == SprawlResult_OK);
-            CHECK(c.io.flush(c.io.ctx) == SprawlResult_OK);
+            RUN(&c, r, cache_write_dirty(&c));
+            CHECK(r == SprawlResult_OK);
+            RUN(&c, r, cache_flush(&c));
+            CHECK(r == SprawlResult_OK);
             c.generation++;
         }
     }
@@ -161,7 +168,9 @@ static void test_cache_random(uint64_t *rng) {
 static void test_cache_all_dirty(uint64_t *rng) {
     test_cache_init(rng);
 
-    CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, DOC_CACHE_SLOTS));
+    CHECK(r == SprawlResult_OK);
     for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
         page_create(rng);
     }
@@ -171,14 +180,17 @@ static void test_cache_all_dirty(uint64_t *rng) {
     uint32_t expected_writes = rng_next(rng) % DOC_CACHE_SLOTS + 1;
     
     uint64_t writes = m.writes;
-    CHECK(cache_reserve(&c, expected_writes) == SprawlResult_OK);
+    RUN(&c, r, cache_reserve(&c, expected_writes));
+    CHECK(r == SprawlResult_OK);
     CHECK(m.writes - writes == expected_writes);
 }
 
 static void test_cache_reserve_write_fail(uint64_t *rng) {
     test_cache_init(rng);
 
-    CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, DOC_CACHE_SLOTS));
+    CHECK(r == SprawlResult_OK);
     for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
         page_create(rng);
     }
@@ -186,8 +198,10 @@ static void test_cache_reserve_write_fail(uint64_t *rng) {
     cache_unpin_all(&c);
 
     m.fail_call = m.calls + 1 + rng_next(rng) % DOC_CACHE_SLOTS;
-    CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_IOError);
-    CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
+    RUN(&c, r, cache_reserve(&c, DOC_CACHE_SLOTS));
+    CHECK(r == SprawlResult_IOError);
+    RUN(&c, r, cache_reserve(&c, DOC_CACHE_SLOTS));
+    CHECK(r == SprawlResult_OK);
 
     for (uint64_t n = INITIAL_PAGES; n < next_page; n++) {
         CHECK(memcmp(m.pages[n] + 4, model[n] + 4, PAGE_SIZE_BYTES - 4) == 0);
@@ -197,7 +211,9 @@ static void test_cache_reserve_write_fail(uint64_t *rng) {
 static void test_cache_pin_read_fail(uint64_t *rng) {
     test_cache_init(rng);
 
-    CHECK(cache_reserve(&c, 1) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, 1));
+    CHECK(r == SprawlResult_OK);
 
     m.fail_call = m.calls + 1;
 
@@ -205,11 +221,25 @@ static void test_cache_pin_read_fail(uint64_t *rng) {
     page_header_read(model[0], &h);
 
     uint8_t *page;
-    CHECK(cache_pin(&c, 0, h.kind, h.table, &page) == SprawlResult_IOError);
+    RUN(&c, r, cache_pin(&c, 0, h.kind, h.table, &page));
+    CHECK(r == SprawlResult_IOError);
 
+    // attempting pin on a failed page should not 
+    // trigger another read
     uint64_t reads = m.reads;
-    CHECK(cache_pin(&c, 0, h.kind, h.table, &page) == SprawlResult_OK);
+    RUN(&c, r, cache_pin(&c, 0, h.kind, h.table, &page));
+    CHECK(r == SprawlResult_IOError);
+    CHECK(m.reads == reads);
+
+    // starting a new step resets failed state, allowing the read to succeed
+    cache_unpin_all(&c);
+    RUN(&c, r, cache_reserve(&c, 1));
+    CHECK(r == SprawlResult_OK);
+    reads = m.reads;
+    RUN(&c, r, cache_pin(&c, 0, h.kind, h.table, &page));
+    CHECK(r == SprawlResult_OK);
     CHECK(m.reads - reads == 1);
+
 
     CHECK(memcmp(page, model[0], PAGE_SIZE_BYTES) == 0);
 }
@@ -221,34 +251,43 @@ static void test_cache_corrupted_read(uint64_t *rng) {
 
     uint8_t *b = &m.pages[corrupt_page][rng_next(rng) % PAGE_SIZE_BYTES];
     *b ^= (uint8_t)(0x01 << (rng_next(rng) % 8));
-  
-    CHECK(cache_reserve(&c, 1) == SprawlResult_OK);
+ 
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, 1));
+    CHECK(r == SprawlResult_OK);
     sprawl_page_header h;
     page_header_read(model[corrupt_page], &h);
     uint8_t *page;
-    CHECK(cache_pin(&c, corrupt_page, h.kind, h.table, &page) == SprawlResult_Corrupt);
+    RUN(&c, r, cache_pin(&c, corrupt_page, h.kind, h.table, &page));
+    CHECK(r == SprawlResult_Corrupt);
 
     cache_unpin_all(&c);
     cache_drop_all(&c);
     // reset corrupt page
     memcpy(m.pages[corrupt_page], model[corrupt_page], PAGE_SIZE_BYTES);
 
-    CHECK(cache_reserve(&c, 2) == SprawlResult_OK);
+    RUN(&c, r, cache_reserve(&c, 2));
+    CHECK(r == SprawlResult_OK);
     page_header_read(model[corrupt_page], &h);
-    CHECK(cache_pin(&c, corrupt_page, PageKind_Leaf, h.table, &page) == SprawlResult_OK);
-    CHECK(cache_pin(&c, corrupt_page, PageKind_Branch, h.table, &page) == SprawlResult_Corrupt);
+    RUN(&c, r, cache_pin(&c, corrupt_page, PageKind_Leaf, h.table, &page));
+    CHECK(r == SprawlResult_OK);
+    RUN(&c, r, cache_pin(&c, corrupt_page, PageKind_Branch, h.table, &page));
+    CHECK(r == SprawlResult_Corrupt);
 }
 
 static void test_cache_drop(uint64_t *rng) {
     test_cache_init(rng);
 
-    CHECK(cache_reserve(&c, 2) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, 2));
+    CHECK(r == SprawlResult_OK);
 
     uint32_t page_num = rng_next(rng) % INITIAL_PAGES;
     sprawl_page_header h;
     page_header_read(model[page_num], &h);
     uint8_t *page;
-    CHECK(cache_pin(&c, page_num, h.kind, h.table, &page) == SprawlResult_OK);
+    RUN(&c, r, cache_pin(&c, page_num, h.kind, h.table, &page));
+    CHECK(r == SprawlResult_OK);
 
     cache_drop(&c, page);
 
@@ -262,12 +301,15 @@ static void test_cache_drop(uint64_t *rng) {
 static void test_cache_drop_all(uint64_t *rng) {
     test_cache_init(rng);
 
-    CHECK(cache_reserve(&c, DOC_CACHE_SLOTS) == SprawlResult_OK);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, DOC_CACHE_SLOTS));
+    CHECK(r == SprawlResult_OK);
     for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
         sprawl_page_header h;
         page_header_read(model[i], &h);
         uint8_t *page;
-        CHECK(cache_pin(&c, i, h.kind, h.table, &page) == SprawlResult_OK);
+        RUN(&c, r, cache_pin(&c, i, h.kind, h.table, &page));
+        CHECK(r == SprawlResult_OK);
     }
 
     cache_unpin_all(&c);
@@ -276,15 +318,110 @@ static void test_cache_drop_all(uint64_t *rng) {
     uint64_t reads = m.reads;
     uint32_t read_count = rng_next(rng) % DOC_CACHE_SLOTS + 1;
 
-    CHECK(cache_reserve(&c, read_count) == SprawlResult_OK);
+    RUN(&c, r, cache_reserve(&c, read_count));
+    CHECK(r == SprawlResult_OK);
     for (uint32_t i = 0; i < read_count; i++) {
         sprawl_page_header h;
         page_header_read(model[i], &h);
         uint8_t *page;
-        CHECK(cache_pin(&c, i, h.kind, h.table, &page) == SprawlResult_OK);
+        RUN(&c, r, cache_pin(&c, i, h.kind, h.table, &page));
+        CHECK(r == SprawlResult_OK);
     }
 
     CHECK(m.reads - reads == read_count);
+}
+
+static void test_cache_dropped_step(uint64_t *rng) {
+    test_cache_init(rng);
+
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, 1));
+    CHECK(r == SprawlResult_OK);
+
+    uint8_t *page;
+    r = cache_pin(&c, 0, PageKind_Leaf, 1, &page);
+    CHECK(r == SprawlResult_Pending);
+    cache_unpin_all(&c);
+    cache_poll(&c);
+    CHECK(c.in_flight == 0);
+    uint64_t reads = m.reads;
+    RUN(&c, r, cache_reserve(&c, 1));
+    CHECK(r == SprawlResult_OK);
+    r = cache_pin(&c, 0, PageKind_Leaf, 1, &page);
+    CHECK(r == SprawlResult_OK);
+    CHECK(reads == m.reads);
+}
+
+static void test_cache_reserve_idempotency(uint64_t *rng) {
+    test_cache_init(rng);
+
+    // force all slots to be dirty
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, DOC_CACHE_SLOTS));
+    CHECK(r == SprawlResult_OK);
+    for (uint32_t i = 0; i < DOC_CACHE_SLOTS; i++) {
+        page_create(rng);
+    }
+    cache_unpin_all(&c);
+
+    uint32_t to_reserve = (uint32_t)(1 + rng_next(rng) % DOC_CACHE_SLOTS);
+
+    CHECK(cache_reserve(&c, to_reserve) == SprawlResult_Pending);
+    CHECK(c.in_flight == to_reserve);
+    uint32_t queue_len = c.in_flight;
+
+    CHECK(cache_reserve(&c, to_reserve) == SprawlResult_Pending);
+    CHECK(c.in_flight == queue_len);
+    
+    uint64_t writes = m.writes;
+    cache_poll(&c);
+    CHECK(m.writes - writes == to_reserve);
+    CHECK(cache_reserve(&c, to_reserve) == SprawlResult_OK);
+}
+
+static void test_cache_commit_then_crash(uint64_t *rng) {
+    test_cache_init(rng);
+    
+    uint32_t n = (uint32_t)(1 + rng_next(rng) % DOC_CACHE_SLOTS);
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, n));
+    CHECK(r == SprawlResult_OK);
+
+    uint64_t page_nums[DOC_CACHE_SLOTS];
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t *page = page_create(rng);
+        page_nums[i] = PAGE_PAGENUM(page);
+    }
+
+    cache_unpin_all(&c);
+    RUN(&c, r, cache_write_dirty(&c));
+    CHECK(r == SprawlResult_OK);
+    RUN(&c, r, cache_flush(&c));
+    CHECK(r == SprawlResult_OK);
+
+    c.generation++;
+    uint32_t k = (uint32_t)(1 + rng_next(rng) % DOC_CACHE_SLOTS);
+    RUN(&c, r, cache_reserve(&c, k));
+    CHECK(r == SprawlResult_OK);
+
+    for (uint32_t i = 0; i < k; i++) {
+        page_create(rng);
+    }
+    cache_unpin_all(&c);
+
+    CHECK(cache_write_dirty(&c) == SprawlResult_Pending);
+    mem_io_crash(&m, rng);
+    cache_init(&c, pages, slots, DOC_CACHE_SLOTS, mem_io_adapter(&m));
+    c.generation = 100;
+    for (uint32_t i = 0; i < n; i++) {
+        RUN(&c, r, cache_reserve(&c, 1));
+        CHECK(r == SprawlResult_OK);
+        uint8_t *page;
+        RUN(&c, r, cache_pin(&c, page_nums[i], PageKind_Leaf, 1, &page));
+        CHECK(r == SprawlResult_OK);
+        CHECK(memcmp(page + 4, model[page_nums[i]] + 4, PAGE_SIZE_BYTES - 4) == 0);
+        cache_unpin_all(&c);
+    }
 }
 
 void test_cache(uint64_t seed) {
@@ -295,4 +432,7 @@ void test_cache(uint64_t seed) {
     TIMED(test_cache_corrupted_read(&seed));
     TIMED(test_cache_drop(&seed));
     TIMED(test_cache_drop_all(&seed));
+    TIMED(test_cache_dropped_step(&seed));
+    TIMED(test_cache_reserve_idempotency(&seed));
+    TIMED(test_cache_commit_then_crash(&seed));
 }

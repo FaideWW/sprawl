@@ -5,7 +5,7 @@
 
 #if defined(SPRAWL_PROFILE_TEST)
 #   define PAGE_SIZE_BYTES 512
-#   define DOC_CACHE_SLOTS 16
+#   define DOC_CACHE_SLOTS 32
 #elif defined(SPRAWL_PROFILE_BROWSER)
 #   define PAGE_SIZE_BYTES KB(16)
 #   define DOC_CACHE_SLOTS 4096         // 64MB

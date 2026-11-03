@@ -10,6 +10,7 @@ static void run_all(uint64_t seed) {
     TIMED(test_cache(seed));
     TIMED(test_btree(seed));
     TIMED(test_crc32c(seed));
+    TIMED(test_freelist(seed));
 }
 
 

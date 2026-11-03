@@ -1,17 +1,27 @@
 #include "page_cache.h"
 #include "bytes.h"
+#include "io.h"
 #include "page.h"
 #include "profile.h"
 #include "result.h"
 #include <stddef.h>
 #include <string.h>
 
+#define CACHE_TAG_FLUSH UINT32_MAX
+#define CACHE_COMPLETION_BUFFER_SIZE 256
+
+static void submit(sprawl_cache *c, sprawl_io_request *r) {
+    c->io.submit(c->io.ctx, r);
+    c->in_flight++;
+}
+
 // writes a dirty slot to the io adapter. the slot 
 // must be unpinned, since a pinned slot can still change
-static SprawlResult write_slot(sprawl_cache *c, uint32_t idx) {
+static void write_slot(sprawl_cache *c, uint32_t idx) {
     CHECK(idx < c->slot_count);
     CHECK(!c->slots[idx].pinned);
     CHECK(c->slots[idx].state == SlotState_Dirty);
+    CHECK(c->slots[idx].error == SprawlResult_OK);
     uint64_t page_num = c->slots[idx].page_num;
     uint8_t *page = c->pages[idx];
 
@@ -21,11 +31,16 @@ static SprawlResult write_slot(sprawl_cache *c, uint32_t idx) {
     CHECK(h.generation == c->generation);
 
     page_checksum_write(page);
-    SprawlResult r = c->io.write(c->io.ctx, page_num, page);
-    if (r != SprawlResult_OK) return r;
 
-    c->slots[idx].state = SlotState_Clean;
-    return SprawlResult_OK;
+    sprawl_io_request r = {
+        .op = IoOp_Write,
+        .tag = idx, 
+        .page_num = page_num,
+        .page = c->pages[idx],
+    };
+
+    submit(c, &r);
+    c->slots[idx].state = SlotState_Writing;
 }
 
 static uint32_t victim(sprawl_cache *c) {
@@ -45,16 +60,21 @@ static uint32_t victim(sprawl_cache *c) {
     return 0;
 }
 
-void cache_init(sprawl_cache *c, uint8_t (*pages)[PAGE_SIZE_BYTES], sprawl_cache_slot *slots, uint32_t slot_count, sprawl_io io) {
+void cache_init(sprawl_cache *c, uint8_t (*pages)[PAGE_SIZE_BYTES], sprawl_cache_slot *slots, 
+                uint32_t slot_count, sprawl_io io) {
     CHECK(pages != NULL);
     CHECK(slots != NULL);
     CHECK(slot_count > 0);
+    // at most one request per slot, plus superblock and flush
+    CHECK(io.capacity >= slot_count + 2); 
     c->pages = pages;
     c->slots = slots;
     c->slot_count = slot_count;
     c->hand = 0;
     c->reserved = 0;
     c->generation = 0;
+    c->in_flight = 0;
+    c->flush_state = FlushState_Idle;
     c->io = io;
 
     for (uint32_t i = 0; i < c->slot_count; i++) {
@@ -62,33 +82,47 @@ void cache_init(sprawl_cache *c, uint8_t (*pages)[PAGE_SIZE_BYTES], sprawl_cache
         c->slots[i].state = SlotState_Free;
         c->slots[i].pinned = false;
         c->slots[i].referenced = false;
+        c->slots[i].error = SprawlResult_OK;
     }
 }
 
 SprawlResult cache_reserve(sprawl_cache *c, uint32_t n) {
     CHECK(c->reserved == 0);
     CHECK(n <= c->slot_count);
-    uint32_t free_or_clean = 0;
+    uint32_t ready = 0;
+    uint32_t in_progress = 0;
+    SprawlResult failed = SprawlResult_OK;
     for (uint32_t i = 0; i < c->slot_count; i++) {
-        CHECK(!c->slots[i].pinned);
-        if (c->slots[i].state != SlotState_Dirty) free_or_clean++;
+        sprawl_cache_slot *s = &c->slots[i];
+        CHECK(!s->pinned);
+        if (s->state == SlotState_Dirty && s->error != SprawlResult_OK) { 
+            if (result_severity(s->error) > result_severity(failed)) failed = s->error; 
+            s->error = SprawlResult_OK;
+        }
+        if (s->state == SlotState_Free || s->state == SlotState_Clean) ready++;
+        if (s->state == SlotState_Reading || s->state == SlotState_Writing) in_progress++;
+    }
+
+    if (failed != SprawlResult_OK) return failed;
+
+    if (ready >= n) { 
+        c->reserved = n;
+        return SprawlResult_OK; 
     }
 
     uint32_t i = 0;
     // write dirty slots early to make room
-    while (free_or_clean < n) {
+    while (ready + in_progress < n) {
         CHECK(i < c->slot_count);
         if (c->slots[i].state == SlotState_Dirty) {
             CHECK(!c->slots[i].pinned);
-            SprawlResult result = write_slot(c, i);
-            free_or_clean++;
-            if (result != SprawlResult_OK) return result;
+            write_slot(c, i);
+            in_progress++;
         } 
         i++;
     }
-    c->reserved = n;
 
-    return SprawlResult_OK;
+    return SprawlResult_Pending;
 }
 
 static uint32_t cache_find(sprawl_cache *c, uint64_t page_num) {
@@ -106,21 +140,27 @@ SprawlResult cache_pin(sprawl_cache *c, uint64_t page_num, PageKind kind, uint8_
     uint32_t idx = cache_find(c, page_num);
     if (idx < c->slot_count) {
         // cache hit; re-verify the cached page is what the caller requested
-        SprawlResult r = page_header_verify(c->pages[idx], page_num, kind, table, c->generation);
-        if (r != SprawlResult_OK) return r;
+        if (c->slots[idx].state == SlotState_Reading) {
+            // fall through
+        } else if (c->slots[idx].state == SlotState_Failed) {
+            return c->slots[idx].error;
+        } else {
+            SprawlResult r = page_header_verify(c->pages[idx], page_num, kind, table, c->generation);
+            if (r != SprawlResult_OK) return r;
+        }
     } else {
-        // cache miss; fetch the page and verify
+        // cache miss; fetch the page 
         idx = victim(c);
-        c->slots[idx].state = SlotState_Free;
-        uint8_t *page = c->pages[idx];
-        SprawlResult r = c->io.read(c->io.ctx, page_num, page);
-        if (r == SprawlResult_OK) r = page_checksum_verify(page);
-        if (r == SprawlResult_OK) r = page_header_verify(page, page_num, kind, table, c->generation);
-
-        if (r != SprawlResult_OK) return r;
-
+        c->slots[idx].state = SlotState_Reading;
+        c->slots[idx].error = SprawlResult_OK;
         c->slots[idx].page_num = page_num;
-        c->slots[idx].state = SlotState_Clean;
+        sprawl_io_request r = {
+            .op = IoOp_Read,
+            .page_num = page_num,
+            .page = c->pages[idx],
+            .tag = idx,
+        };
+        submit(c, &r);
     }
 
     sprawl_cache_slot *slot = &c->slots[idx];
@@ -132,6 +172,8 @@ SprawlResult cache_pin(sprawl_cache *c, uint64_t page_num, PageKind kind, uint8_
     }
 
     slot->referenced = true;
+
+    if (slot->state == SlotState_Reading) return SprawlResult_Pending;
     *page_out = c->pages[idx];
     return SprawlResult_OK;
 }
@@ -147,14 +189,14 @@ uint8_t *cache_pin_new(sprawl_cache *c, uint64_t page_num) {
 
     memset(page, 0, PAGE_SIZE_BYTES);
 
-    c->slots[idx].page_num = page_num;
-    c->slots[idx].state = SlotState_Dirty;
-
     sprawl_cache_slot *slot = &c->slots[idx];
-    c->reserved -= 1;
+    slot->page_num = page_num;
+    slot->state = SlotState_Dirty;
+    slot->error = SprawlResult_OK;
     slot->pinned = true;
-
     slot->referenced = true;
+
+    c->reserved -= 1;
     return page;
 }
 
@@ -163,6 +205,48 @@ uint8_t *cache_pinned(sprawl_cache *c, uint64_t page_num) {
     CHECK(existing < c->slot_count);
     CHECK(c->slots[existing].pinned == true);
     return c->pages[existing];
+}
+
+void cache_poll(sprawl_cache *c) {
+    sprawl_io_completion completions[CACHE_COMPLETION_BUFFER_SIZE]; 
+    uint32_t completed = c->io.complete(c->io.ctx, completions, CACHE_COMPLETION_BUFFER_SIZE);
+   
+    CHECK(completed <= c->in_flight);
+    c->in_flight -= completed;
+    for (uint32_t i = 0; i < completed; i++) {
+        sprawl_io_completion *comp = &completions[i];
+        if (comp->tag == CACHE_TAG_FLUSH) {
+            CHECK(c->flush_state == FlushState_InFlight);
+            c->flush_state = FlushState_Done;
+            c->flush_result = comp->result;
+            continue;
+        }
+        CHECK(comp->tag < c->slot_count);
+        sprawl_cache_slot *s = &c->slots[comp->tag];
+        if (s->state == SlotState_Reading) {
+            SprawlResult r = comp->result;
+            if (r == SprawlResult_OK) r = page_checksum_verify(c->pages[comp->tag]);
+            if (r != SprawlResult_OK) { 
+                if (s->pinned) {
+                    s->state = SlotState_Failed; 
+                    s->error = r;
+                } else {
+                    s->state = SlotState_Free;
+                }
+            } else {
+                s->state = SlotState_Clean;
+            }
+        } else if (s->state == SlotState_Writing) {
+            if (comp->result == SprawlResult_OK) {
+                s->state = SlotState_Clean;
+            } else {
+                s->state = SlotState_Dirty;
+                s->error = comp->result;
+            }
+        } else {
+            CHECK(false);
+        }
+    }
 }
 
 static uint32_t slot_of(sprawl_cache *c, const uint8_t *page) {
@@ -178,6 +262,7 @@ void cache_mark_dirty(sprawl_cache *c, uint8_t *page) {
     
     sprawl_cache_slot *slot = &c->slots[idx];
     CHECK(slot->pinned);
+    CHECK(slot->state == SlotState_Clean || slot->state == SlotState_Dirty);
 
     sprawl_page_header h;
     page_header_read(page, &h);
@@ -193,6 +278,7 @@ void cache_cow(sprawl_cache *c, uint8_t *page, uint64_t page_num_new) {
 
     sprawl_cache_slot *slot = &c->slots[idx];
     CHECK(slot->pinned);
+    CHECK(slot->state == SlotState_Clean || slot->state == SlotState_Dirty);
     slot->page_num = page_num_new;
 
     sprawl_page_header h;
@@ -207,15 +293,17 @@ void cache_cow(sprawl_cache *c, uint8_t *page, uint64_t page_num_new) {
 
 void cache_drop(sprawl_cache *c, const uint8_t *page) {
     uint32_t idx = slot_of(c, page);
-    CHECK(c->slots[idx].state != SlotState_Free);
+    sprawl_cache_slot *slot = &c->slots[idx];
+    CHECK(slot->state == SlotState_Clean || slot->state == SlotState_Dirty);
 
-    c->slots[idx].state = SlotState_Free;
-    c->slots[idx].pinned = false;
-    c->slots[idx].referenced = false;
+    slot->state = SlotState_Free;
+    slot->pinned = false;
+    slot->referenced = false;
 }
 
 void cache_unpin_all(sprawl_cache *c) {
     for (uint32_t i = 0; i < c->slot_count; i++) {
+        if (c->slots[i].state == SlotState_Failed) c->slots[i].state = SlotState_Free;
         c->slots[i].pinned = false;
     }
 
@@ -223,23 +311,54 @@ void cache_unpin_all(sprawl_cache *c) {
 }
 
 SprawlResult cache_write_dirty(sprawl_cache *c) {
+    bool pending = false;
+    SprawlResult failed = SprawlResult_OK;
     for (uint32_t i = 0; i < c->slot_count; i++) {
-        sprawl_cache_slot *slot = &c->slots[i];
+        sprawl_cache_slot *s = &c->slots[i];
+        if (s->state == SlotState_Dirty && s->error != SprawlResult_OK) { 
+            if (result_severity(s->error) > result_severity(failed)) failed = s->error; 
+            s->error = SprawlResult_OK;
+        }
+    }
+    if (failed != SprawlResult_OK) return failed;
 
-        if (slot->state == SlotState_Dirty) {
-            SprawlResult r = write_slot(c, i);
-            if (r != SprawlResult_OK) return r;
+    for (uint32_t i = 0; i < c->slot_count; i++) {
+        sprawl_cache_slot *s = &c->slots[i];
+        if (s->state == SlotState_Dirty) {
+            pending = true;
+            write_slot(c, i);
+        } else if (s->state == SlotState_Writing) {
+            pending = true;
         }
     }
 
-    return SprawlResult_OK;
+    return pending ? SprawlResult_Pending : SprawlResult_OK;
 }
 
+SprawlResult cache_flush(sprawl_cache *c) {
+    if (c->flush_state == FlushState_Idle) {
+        for (uint32_t i = 0; i < c->slot_count; i++) CHECK(c->slots[i].state != SlotState_Writing);
+        sprawl_io_request r = {
+            .op = IoOp_Flush,
+            .page = NULL,
+            .page_num = 0,
+            .tag = CACHE_TAG_FLUSH,
+        };
+        submit(c, &r);
+        c->flush_state = FlushState_InFlight;
+        return SprawlResult_Pending;
+    }
+    if (c->flush_state == FlushState_InFlight) return SprawlResult_Pending;
+    c->flush_state = FlushState_Idle;
+    return c->flush_result;
+}
 
 void cache_drop_all(sprawl_cache *c) {
+    CHECK(c->in_flight == 0);
     for (uint32_t i = 0; i < c->slot_count; i++) {
         c->slots[i].state = SlotState_Free;
         c->slots[i].pinned = false;
         c->slots[i].referenced = false;
     }
+    c->reserved = 0;
 }
