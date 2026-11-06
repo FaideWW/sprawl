@@ -13,7 +13,7 @@ static bool fl_cursor_eq(fl_cursor a, fl_cursor b) {
     return a.page == b.page && a.remaining == b.remaining;
 }
 
-static bool fl_cursor_verify(fl_cursor c, uint64_t page_count) {
+bool fl_cursor_verify(fl_cursor c, uint64_t page_count) {
     return (
         (c.page == 0 && c.remaining == 0) ||
         ((2 <= c.page && c.page < page_count) && (1 <= c.remaining && c.remaining <= FL_CAP))

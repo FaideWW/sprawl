@@ -57,7 +57,7 @@ static void check_all(uint32_t count) {
         bool found;
         uint8_t value_out[TEST_VALUE_SIZE_BYTES];
         SprawlResult r;
-        RUN(&c, r, cache_reserve(&c, HEIGHT_MAX));
+        RUN(&c, r, cache_reserve(&c, TREE_HEIGHT_MAX));
         CHECK(r == SprawlResult_OK);
         RUN(&c, r, btree_get(&c, &tree, k, value_out, &found));
         CHECK(r == SprawlResult_OK);

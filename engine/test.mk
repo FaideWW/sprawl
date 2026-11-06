@@ -20,13 +20,24 @@ HDR := $(wildcard core/*.h include/*.h test/*.h)
 BIN_DEBUG := build/native/test_core_debug_$(CRC)
 BIN_PERF := build/native/test_core_perf_$(CRC)
 
-$(BIN_DEBUG): $(SRC) $(HDR) 
-	@mkdir -p $(@D) 
-	$(CC) $(CFLAGS) $(CFLAGS_DEBUG) $(SRC) -o $@ -lm 
+OBJ_DEBUG := $(SRC:%.c=build/native/debug_$(CRC)/%.o)
+OBJ_PERF := $(SRC:%.c=build/native/perf_$(CRC)/%.o)
 
-$(BIN_PERF): $(SRC) $(HDR) 
+build/native/debug_$(CRC)/%.o: %.c $(HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(CFLAGS_DEBUG) -c $< -o $@
+
+build/native/perf_$(CRC)/%.o: %.c $(HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(CFLAGS_PERF) -c $< -o $@
+
+$(BIN_DEBUG): $(OBJ_DEBUG) 
 	@mkdir -p $(@D) 
-	$(CC) $(CFLAGS) $(CFLAGS_PERF) $(SRC) -o $@ -lm 
+	$(CC) $(CFLAGS) $(CFLAGS_DEBUG) $^ -o $@ -lm 
+
+$(BIN_PERF): $(OBJ_PERF) 
+	@mkdir -p $(@D) 
+	$(CC) $(CFLAGS) $(CFLAGS_PERF) $^ -o $@ -lm 
 
 test: $(BIN_DEBUG) 
 	ASAN_OPTIONS=handle_abort=1	./$(BIN_DEBUG) $(SEED)
@@ -34,4 +45,6 @@ test: $(BIN_DEBUG)
 test-perf: $(BIN_PERF) 
 	./$(BIN_PERF) $(SEED)
 
-.PHONY: test test-perf
+check: $(BIN_DEBUG)
+
+.PHONY: check test test-perf 

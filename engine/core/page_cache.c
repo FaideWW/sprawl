@@ -7,7 +7,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#define CACHE_TAG_FLUSH UINT32_MAX
 #define CACHE_COMPLETION_BUFFER_SIZE 256
 
 static void submit(sprawl_cache *c, sprawl_io_request *r) {
@@ -74,7 +73,7 @@ void cache_init(sprawl_cache *c, uint8_t (*pages)[PAGE_SIZE_BYTES], sprawl_cache
     c->reserved = 0;
     c->generation = 0;
     c->in_flight = 0;
-    c->flush_state = FlushState_Idle;
+    c->raw_state = RawState_Idle;
     c->io = io;
 
     for (uint32_t i = 0; i < c->slot_count; i++) {
@@ -215,10 +214,10 @@ void cache_poll(sprawl_cache *c) {
     c->in_flight -= completed;
     for (uint32_t i = 0; i < completed; i++) {
         sprawl_io_completion *comp = &completions[i];
-        if (comp->tag == CACHE_TAG_FLUSH) {
-            CHECK(c->flush_state == FlushState_InFlight);
-            c->flush_state = FlushState_Done;
-            c->flush_result = comp->result;
+        if (comp->tag == CACHE_TAG_RAW) {
+            CHECK(c->raw_state == RawState_InFlight);
+            c->raw_state = RawState_Done;
+            c->raw_result = comp->result;
             continue;
         }
         CHECK(comp->tag < c->slot_count);
@@ -335,22 +334,26 @@ SprawlResult cache_write_dirty(sprawl_cache *c) {
     return pending ? SprawlResult_Pending : SprawlResult_OK;
 }
 
-SprawlResult cache_flush(sprawl_cache *c) {
-    if (c->flush_state == FlushState_Idle) {
+SprawlResult cache_raw(sprawl_cache *c, IoOp op, uint64_t page_num, uint8_t *buf) {
+    if (c->raw_state == RawState_Idle) {
         for (uint32_t i = 0; i < c->slot_count; i++) CHECK(c->slots[i].state != SlotState_Writing);
         sprawl_io_request r = {
-            .op = IoOp_Flush,
-            .page = NULL,
-            .page_num = 0,
-            .tag = CACHE_TAG_FLUSH,
+            .op = (uint8_t)op,
+            .page = buf,
+            .page_num = page_num,
+            .tag = CACHE_TAG_RAW,
         };
         submit(c, &r);
-        c->flush_state = FlushState_InFlight;
+        c->raw_state = RawState_InFlight;
         return SprawlResult_Pending;
     }
-    if (c->flush_state == FlushState_InFlight) return SprawlResult_Pending;
-    c->flush_state = FlushState_Idle;
-    return c->flush_result;
+    if (c->raw_state == RawState_InFlight) return SprawlResult_Pending;
+    c->raw_state = RawState_Idle;
+    return c->raw_result;
+}
+
+SprawlResult cache_flush(sprawl_cache *c) {
+    return cache_raw(c, IoOp_Flush, 0, NULL);
 }
 
 void cache_drop_all(sprawl_cache *c) {

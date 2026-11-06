@@ -7,6 +7,9 @@
 #include "result.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+#define CACHE_TAG_RAW UINT32_MAX
+
 typedef enum {
     SlotState_Free = 0,
     SlotState_Clean = 1,
@@ -17,10 +20,10 @@ typedef enum {
 } SlotState;
 
 typedef enum {
-    FlushState_Idle = 0,
-    FlushState_InFlight = 1,
-    FlushState_Done = 2,
-} FlushState;
+    RawState_Idle = 0,
+    RawState_InFlight = 1,
+    RawState_Done = 2,
+} RawState;
 
 typedef struct {
     uint64_t page_num;
@@ -38,8 +41,8 @@ typedef struct {
     uint32_t reserved;
     uint64_t generation;
     uint32_t in_flight;
-    uint8_t flush_state; // FlushState
-    SprawlResult flush_result; 
+    uint8_t raw_state; // RawState
+    SprawlResult raw_result; 
     sprawl_io io;
 } sprawl_cache;
 
@@ -98,6 +101,11 @@ void cache_unpin_all(sprawl_cache *c);
 // (the caller must retry later after polling), OK if the writes succeeded, or the 
 // most severe underlying error if any write fails.
 SprawlResult cache_write_dirty(sprawl_cache *c);
+
+// submits an IO operation over the raw channel, and returns the result. The caller 
+// must continuously poll and re-call, passing the same arguments, until the return 
+// value is not Pending.
+SprawlResult cache_raw(sprawl_cache *c, IoOp op, uint64_t page_num, uint8_t *buf);
 
 // submits an IO flush. returns Pending while the request is in flight (the caller 
 // must retry later after polling), then the result of the request when it has finished.

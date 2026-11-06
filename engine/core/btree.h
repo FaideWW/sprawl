@@ -6,7 +6,7 @@
 #include "profile.h"
 #include "page_cache.h"
 
-#define HEIGHT_MAX 6 
+#define TREE_HEIGHT_MAX 6 
 #define KEY_SIZE_MAX 64
 #define VALUE_SIZE_MAX ((PAGE_SIZE_BYTES - PAGE_HEADER_SIZE_BYTES) / 2 - KEY_SIZE_MAX)
 
@@ -40,7 +40,7 @@ typedef struct {
 } check_frame;
 
 typedef struct {
-    check_frame frames[HEIGHT_MAX];
+    check_frame frames[TREE_HEIGHT_MAX];
     uint8_t fp;
     uint64_t entries;
     bool started;

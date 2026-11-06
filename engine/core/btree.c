@@ -11,7 +11,7 @@ static void tree_check(const sprawl_tree *t) {
     CHECK(t->table->id != 0);
     CHECK(t->table->key_size >= 1 && t->table->key_size <= KEY_SIZE_MAX);
     CHECK(t->table->value_size <= VALUE_SIZE_MAX);
-    CHECK(t->height <= HEIGHT_MAX);
+    CHECK(t->height <= TREE_HEIGHT_MAX);
     CHECK((t->height == 0) == (t->root == 0));
 }
 
@@ -95,7 +95,7 @@ static SprawlResult node_pin(sprawl_cache *c, const sprawl_tree *t, uint64_t pag
 }
 
 static SprawlResult walk_and_pin(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key, 
-                                 uint8_t *path[HEIGHT_MAX], uint32_t child_idx[HEIGHT_MAX]) {
+                                 uint8_t *path[TREE_HEIGHT_MAX], uint32_t child_idx[TREE_HEIGHT_MAX]) {
     CHECK(t->height > 0);
     uint64_t page_num = t->root;
     uint8_t *page = NULL;
@@ -115,7 +115,7 @@ static SprawlResult walk_and_pin(sprawl_cache *c, const sprawl_tree *t, const ui
 }
 
 static uint8_t *walk_pinned(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key,
-                            uint8_t *path[HEIGHT_MAX], uint32_t child_idx[HEIGHT_MAX]) {
+                            uint8_t *path[TREE_HEIGHT_MAX], uint32_t child_idx[TREE_HEIGHT_MAX]) {
     CHECK(t->height > 0);
     uint64_t page_num = t->root;
     uint8_t *page = NULL;
@@ -139,8 +139,8 @@ SprawlResult btree_get(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key
         *found = false;
         return SprawlResult_OK;
     }
-    uint8_t *path[HEIGHT_MAX];
-    uint32_t child_idx[HEIGHT_MAX];
+    uint8_t *path[TREE_HEIGHT_MAX];
+    uint32_t child_idx[TREE_HEIGHT_MAX];
 
     SprawlResult walkdown_result = walk_and_pin(c, t, key, path, child_idx);
     if (walkdown_result != SprawlResult_OK) return walkdown_result;
@@ -161,8 +161,8 @@ SprawlResult btree_seek(sprawl_cache *c, const sprawl_tree *t, const uint8_t *ke
         return SprawlResult_OK;
     }
 
-    uint8_t *path[HEIGHT_MAX];
-    uint32_t child_idx[HEIGHT_MAX];
+    uint8_t *path[TREE_HEIGHT_MAX];
+    uint32_t child_idx[TREE_HEIGHT_MAX];
     SprawlResult walkdown_result = walk_and_pin(c, t, key, path, child_idx);
     if (walkdown_result != SprawlResult_OK) return walkdown_result;
 
@@ -208,10 +208,10 @@ SprawlResult btree_seek(sprawl_cache *c, const sprawl_tree *t, const uint8_t *ke
 SprawlResult btree_insert_prepare(sprawl_cache *c, const sprawl_tree *t, const uint8_t *key) {
     tree_check(t);
     if (t->height == 0) return SprawlResult_OK;
-    uint8_t *path[HEIGHT_MAX];
-    uint32_t child_idx[HEIGHT_MAX];
+    uint8_t *path[TREE_HEIGHT_MAX];
+    uint32_t child_idx[TREE_HEIGHT_MAX];
     SprawlResult r = walk_and_pin(c, t, key, path, child_idx);
-    if (r != SprawlResult_OK || t->height < HEIGHT_MAX) return r;
+    if (r != SprawlResult_OK || t->height < TREE_HEIGHT_MAX) return r;
 
     // check if an insert will root split and increase the tree's height 
     uint32_t idx;
@@ -361,8 +361,8 @@ void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     }
 
     uint32_t idx = 0;
-    uint8_t *path[HEIGHT_MAX];
-    uint32_t child_idx[HEIGHT_MAX]; 
+    uint8_t *path[TREE_HEIGHT_MAX];
+    uint32_t child_idx[TREE_HEIGHT_MAX]; 
 
     uint8_t *page = walk_pinned(c, t, key, path, child_idx);
     bool found = leaf_find(page, t->table, key, &idx);
@@ -414,7 +414,7 @@ void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     t->root = new_page_num;
 
     if (split) {
-        CHECK(t->height < HEIGHT_MAX);
+        CHECK(t->height < TREE_HEIGHT_MAX);
         uint8_t *new_root;
         uint64_t new_root_num = node_new(c, a, t, t->height, &new_root);
         put_u16le(new_root + 8, 2); // count = 2
@@ -429,7 +429,7 @@ void btree_insert_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     }
 }
 
-static uint8_t removal_level(const sprawl_tree *t, uint8_t *path[HEIGHT_MAX]) {
+static uint8_t removal_level(const sprawl_tree *t, uint8_t *path[TREE_HEIGHT_MAX]) {
     uint8_t level = 0;
     while (level < t->height && PAGE_COUNT(path[level]) == 1) level++;
     return level;
@@ -440,8 +440,8 @@ SprawlResult btree_delete_prepare(sprawl_cache *c, const sprawl_tree *t, const u
     tree_check(t);
     *found = false;
     if (t->height == 0) return SprawlResult_OK;
-    uint8_t *path[HEIGHT_MAX];
-    uint32_t child_idx[HEIGHT_MAX];
+    uint8_t *path[TREE_HEIGHT_MAX];
+    uint32_t child_idx[TREE_HEIGHT_MAX];
     SprawlResult walkdown_result = walk_and_pin(c, t, key, path, child_idx);
     if (walkdown_result != SprawlResult_OK) { 
         return walkdown_result; 
@@ -457,8 +457,8 @@ void btree_delete_apply(sprawl_cache *c, sprawl_alloc *a, sprawl_tree *t, const 
     collapse_root(c, a, t);
 
     uint32_t idx;
-    uint8_t *path[HEIGHT_MAX];
-    uint32_t child_idx[HEIGHT_MAX]; 
+    uint8_t *path[TREE_HEIGHT_MAX];
+    uint32_t child_idx[TREE_HEIGHT_MAX]; 
     uint8_t *leaf = walk_pinned(c, t, key, path, child_idx);
     CHECK(leaf_find(leaf, t->table, key, &idx));
 
@@ -574,7 +574,7 @@ SprawlResult btree_check(sprawl_cache *c, const sprawl_tree *t, btree_check_stat
 
         uint64_t child_page_num = get_u64le(node_value(page, t->table, f->level, f->next_child));
 
-        CHECK(s->fp < HEIGHT_MAX);
+        CHECK(s->fp < TREE_HEIGHT_MAX);
         check_frame *child_frame = &s->frames[s->fp];
         child_frame->page_num = child_page_num;
         child_frame->level = f->level - 1;

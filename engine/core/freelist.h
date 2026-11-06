@@ -52,6 +52,9 @@ typedef struct {
     bool waiting;
 } freelist_check_state;
 
+// validates the freelist cursor is either empty, or valid
+bool fl_cursor_verify(fl_cursor c, uint64_t page_count);
+
 // computes the number of freelist pages needed to support the given tree reservation count,
 // then pins and validates the pages in the cache. in the worst case, all pages reserved may
 // be freed during the operation, so the number of freelist pages prepared is the upper bound.
