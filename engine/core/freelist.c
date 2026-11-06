@@ -76,7 +76,7 @@ static void fl_copy_moved(sprawl_freelist *f) {
     }
 }
 
-// returns a free pagenumber. if this exhausts a committed list page, 
+// returns a free pagenumber. if this exhausts a list page, 
 // its pagenum is written to page_empty_out, and the caller must free it.
 static uint64_t fl_pop(sprawl_freelist *f, uint64_t *page_empty_out) {
     *page_empty_out = 0;
@@ -108,7 +108,7 @@ static uint64_t fl_pop(sprawl_freelist *f, uint64_t *page_empty_out) {
         *page_empty_out = f->src.page;
         f->src = fl_link(node);
 
-        // evict the page so its number can be reclaimed in a future commit
+        // evict the page so its number can be reclaimed in a future advancement
         cache_drop(f->c, node); 
     }
 
@@ -136,7 +136,7 @@ static uint8_t *fl_page_new(sprawl_freelist *f, uint64_t page_num) {
     return page;
 }
 
-// first free of a commit; sets up the freelist's copy 
+// first free of an advancement; sets up the freelist's copy 
 static void fl_start(sprawl_freelist *f) {
     f->overflow_head.page = 0;
     f->overflow_tail = 0;
@@ -292,7 +292,7 @@ fl_cursor freelist_head(const sprawl_freelist *f) {
     return f->src;
 }
 
-void freelist_commit(sprawl_freelist *f) {
+void freelist_advance(sprawl_freelist *f) {
     f->src = freelist_head(f);
     f->copy.page = 0;
     f->copy.remaining = 0;

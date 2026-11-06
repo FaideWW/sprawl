@@ -1,6 +1,5 @@
 #include <string.h>
 #include "simple_alloc.h"
-#include "btree.h"
 #include "bytes.h"
 #include "mem_io.h"
 
@@ -27,7 +26,7 @@ static uint64_t simple_alloc_page(void *ctx) {
     return a->counter++;
 }
 
-void simple_alloc_commit(simple_alloc *a) {
+void simple_alloc_advance(simple_alloc *a) {
     memcpy(a->reusable, a->freed, sizeof(a->reusable));
 }
 

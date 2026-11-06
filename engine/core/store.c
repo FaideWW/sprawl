@@ -119,7 +119,7 @@ SprawlResult store_create(sprawl_store *s, sprawl_cache *c, const sprawl_table *
         s->state = StoreState_Ready;
     }
 
-    return store_commit(s);
+    return store_persist(s);
 }
 
 SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *tables, uint8_t table_count) {
@@ -187,34 +187,34 @@ SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *ta
     return SprawlResult_OK;
 }
 
-static SprawlResult commit_fail(sprawl_store *s, SprawlResult r) {
+static SprawlResult persist_fail(sprawl_store *s, SprawlResult r) {
     s->state = StoreState_Failed;
     s->error = r;
     return r;
 }
 
-SprawlResult store_commit(sprawl_store *s) {
+SprawlResult store_persist(sprawl_store *s) {
     if (s->state == StoreState_Failed) return s->error;
     CHECK(s->state == StoreState_Ready || 
-          (s->state >= StoreState_CommitPages && s->state <= StoreState_CommitFlush2));
+          (s->state >= StoreState_PersistPages && s->state <= StoreState_PersistFlush2));
     CHECK(s->c->reserved == 0);
     CHECK(s->c->generation == s->seq_num + 1);
     if (s->state == StoreState_Ready) {
-        s->state = StoreState_CommitPages;
+        s->state = StoreState_PersistPages;
     }
 
-    if (s->state == StoreState_CommitPages) {
+    if (s->state == StoreState_PersistPages) {
         SprawlResult r = cache_write_dirty(s->c);
         if (r == SprawlResult_Pending) return r;
-        if (r != SprawlResult_OK) return commit_fail(s, r);
+        if (r != SprawlResult_OK) return persist_fail(s, r);
 
-        s->state = StoreState_CommitFlush1;
+        s->state = StoreState_PersistFlush1;
     }
 
-    if (s->state == StoreState_CommitFlush1) {
+    if (s->state == StoreState_PersistFlush1) {
         SprawlResult r = cache_flush(s->c);
         if (r == SprawlResult_Pending) return r;
-        if (r != SprawlResult_OK) return commit_fail(s, r);
+        if (r != SprawlResult_OK) return persist_fail(s, r);
 
         sprawl_superblock sb = {
             .seq_num = s->seq_num + 1,
@@ -233,25 +233,25 @@ SprawlResult store_commit(sprawl_store *s) {
             };
         }
         superblock_encode(&sb, s->sb);
-        s->state = StoreState_CommitSuperblock;
+        s->state = StoreState_PersistSuperblock;
     }
 
-    if (s->state == StoreState_CommitSuperblock) {
+    if (s->state == StoreState_PersistSuperblock) {
         SprawlResult r = cache_raw(s->c, IoOp_Write, (s->seq_num + 1) % 2, s->sb);
         if (r == SprawlResult_Pending) return r;
-        if (r != SprawlResult_OK) return commit_fail(s, r);
+        if (r != SprawlResult_OK) return persist_fail(s, r);
 
-        s->state = StoreState_CommitFlush2;
+        s->state = StoreState_PersistFlush2;
     }
 
-    if (s->state == StoreState_CommitFlush2) {
+    if (s->state == StoreState_PersistFlush2) {
         SprawlResult r = cache_flush(s->c);
         if (r == SprawlResult_Pending) return r;
-        if (r != SprawlResult_OK) return commit_fail(s, r);
+        if (r != SprawlResult_OK) return persist_fail(s, r);
 
         s->seq_num++;
         s->c->generation++;
-        freelist_commit(&s->f);
+        freelist_advance(&s->f);
         s->state = StoreState_Ready;
     }
 

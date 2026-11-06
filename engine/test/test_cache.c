@@ -154,7 +154,7 @@ static void test_cache_random(uint64_t *rng) {
         CHECK(c.reserved == 0);
         cache_unpin_all(&c);
 
-        // commit (25% chance)
+        // persist (25% chance)
         if (rng_next(rng) % 4 == 0) {
             RUN(&c, r, cache_write_dirty(&c));
             CHECK(r == SprawlResult_OK);
@@ -379,7 +379,7 @@ static void test_cache_reserve_idempotency(uint64_t *rng) {
     CHECK(cache_reserve(&c, to_reserve) == SprawlResult_OK);
 }
 
-static void test_cache_commit_then_crash(uint64_t *rng) {
+static void test_cache_persist_then_crash(uint64_t *rng) {
     test_cache_init(rng);
     
     uint32_t n = (uint32_t)(1 + rng_next(rng) % DOC_CACHE_SLOTS);
@@ -434,5 +434,5 @@ void test_cache(uint64_t seed) {
     TIMED(test_cache_drop_all(&seed));
     TIMED(test_cache_dropped_step(&seed));
     TIMED(test_cache_reserve_idempotency(&seed));
-    TIMED(test_cache_commit_then_crash(&seed));
+    TIMED(test_cache_persist_then_crash(&seed));
 }

@@ -46,10 +46,10 @@ typedef enum {
     StoreState_OpenPage1,
     StoreState_OpenFlush,
     StoreState_Ready,
-    StoreState_CommitPages,
-    StoreState_CommitFlush1,
-    StoreState_CommitSuperblock,
-    StoreState_CommitFlush2,
+    StoreState_PersistPages,
+    StoreState_PersistFlush1,
+    StoreState_PersistSuperblock,
+    StoreState_PersistFlush2,
     StoreState_Failed,
 } StoreState;
 
@@ -94,7 +94,7 @@ SprawlResult store_create(sprawl_store *s, sprawl_cache *c, const sprawl_table *
 SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *tables, 
                         uint8_t table_count);
 
-SprawlResult store_commit(sprawl_store *s);
+SprawlResult store_persist(sprawl_store *s);
 sprawl_alloc store_alloc(sprawl_store *s);
 
 #endif // SPRAWL_STORE_H_

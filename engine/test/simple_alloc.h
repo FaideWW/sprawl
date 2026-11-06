@@ -2,7 +2,7 @@
 #define SPRAWL_TEST_SIMPLE_ALLOC_H_
 
 #include <stdint.h>
-#include "btree.h"
+#include "alloc.h"
 #include "mem_io.h"
 
 typedef struct {
@@ -12,7 +12,7 @@ typedef struct {
 } simple_alloc;
 
 void simple_alloc_init(simple_alloc *a);
-void simple_alloc_commit(simple_alloc *a);
+void simple_alloc_advance(simple_alloc *a);
 sprawl_alloc simple_alloc_adapter(simple_alloc *a);
 
 #endif // SPRAWL_TEST_SIMPLE_ALLOC_H_

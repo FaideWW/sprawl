@@ -26,20 +26,20 @@ static mem_io m;
 static sprawl_alloc a;
 
 static bool allocated[MEM_IO_PAGES_MAX];
-static bool freed_in_commit[MEM_IO_PAGES_MAX];
+static bool freed_in_advancement[MEM_IO_PAGES_MAX];
 static uint64_t in_use[MEM_IO_PAGES_MAX];
 static uint32_t in_use_count;
 static bool seen[MEM_IO_PAGES_MAX];
 
-static void commit(void) {
+static void advance(void) {
     SprawlResult r;
     RUN(&c, r, cache_write_dirty(&c));
     CHECK(r == SprawlResult_OK);
     RUN(&c, r, cache_flush(&c));
     CHECK(r == SprawlResult_OK);
     c.generation++;
-    freelist_commit(&f);
-    memset(freed_in_commit, 0, sizeof(freed_in_commit));
+    freelist_advance(&f);
+    memset(freed_in_advancement, 0, sizeof(freed_in_advancement));
 }
 
 static uint8_t *page_new(uint64_t page_num) {
@@ -93,7 +93,7 @@ static void step(uint64_t *rng, uint32_t allocs, uint32_t frees) {
                 uint64_t new_page_num = a.alloc_page(a.ctx);
                 CHECK(new_page_num >= 2 && new_page_num < f.page_count);
                 CHECK(!allocated[new_page_num]);
-                CHECK(!freed_in_commit[new_page_num]);
+                CHECK(!freed_in_advancement[new_page_num]);
                 page_new(new_page_num);
                 step_allocs++;
             } break;
@@ -104,7 +104,7 @@ static void step(uint64_t *rng, uint32_t allocs, uint32_t frees) {
                 cache_drop(&c, page);
                 a.free_page(a.ctx, page_num);
                 allocated[page_num] = false;
-                freed_in_commit[page_num] = true;
+                freed_in_advancement[page_num] = true;
             } break;
         }
     }
@@ -120,7 +120,7 @@ static void test_fl_init(void) {
     CHECK(freelist_init(&f, &c, (fl_cursor){0,0}, 2) == SprawlResult_OK);
     a = freelist_alloc(&f);
     memset(allocated, 0, sizeof(allocated));
-    memset(freed_in_commit, 0, sizeof(freed_in_commit));
+    memset(freed_in_advancement, 0, sizeof(freed_in_advancement));
     in_use_count = 0;
 }
 
@@ -154,7 +154,7 @@ static void test_freelist_random(uint64_t *rng) {
         }
         
         if (rng_next(rng) % 8 == 0) {
-            commit();
+            advance();
         }
     }
 }
@@ -196,9 +196,9 @@ static void test_freelist_empty_chain(uint64_t *rng) {
     step(rng, 0, 1); // free into an empty list 
     check_partition();
    
-    step(rng, 1, 0); // allocate on the same commit
+    step(rng, 1, 0); // allocate on the same advancement
     check_partition();
-    commit();
+    advance();
 
     uint64_t page_count = f.page_count;
     step(rng, 1, 0);
@@ -210,7 +210,7 @@ static void test_freelist_full_head(uint64_t *rng) {
     test_fl_init();
     alloc_n(rng, FL_CAP + 1);
     free_n(rng, FL_CAP - 1);
-    commit();
+    advance();
 
     uint64_t page_count = f.page_count;
     step(rng, 0, 1); 
@@ -229,9 +229,9 @@ static void test_freelist_full_head(uint64_t *rng) {
 static void one_entry_head(uint64_t *rng) {
     test_fl_init();
     alloc_n(rng, 3);
-    commit();
+    advance();
     step(rng, 0, 1); 
-    commit();
+    advance();
 }
 
 static void test_freelist_one_entry_head(uint64_t *rng) {
@@ -240,16 +240,16 @@ static void test_freelist_one_entry_head(uint64_t *rng) {
     step(rng, 0, 1);
     step(rng, 1, 0);
     // the previous free forced the list to use its only usable page for COWing the 
-    // list head, leaving no usable pages left for this commit. allocating a page 
+    // list head, leaving no usable pages left for this advancement. allocating a page 
     // after this forces a new page to be created, which is the page alloc receives.
     CHECK(f.page_count == page_count + 1);
     CHECK(in_use[in_use_count - 1] == page_count); 
     check_partition();
-    commit();
+    advance();
 
     page_count = f.page_count;
     step(rng, 1, 0);
-    // after the commit, the two freed pages are now usable, so allocing reclaims one 
+    // after the advancement, the two freed pages are now usable, so allocing reclaims one 
     // of them.
     CHECK(f.page_count == page_count); 
     check_partition();
@@ -274,7 +274,7 @@ static void disk_write(uint8_t *page) {
     memcpy(m.flushed[page_num], m.pages[page_num], PAGE_SIZE_BYTES);
 }
 
-// writes a committed list of `length` one-entry pages, and `leaves` in-use pages.
+// writes a list of `length` one-entry pages, and `leaves` in-use pages.
 static void chain_build(uint32_t length, uint32_t leaves) {
     CHECK(length > 0);
     test_fl_init();
@@ -335,7 +335,7 @@ static void test_freelist_worstcase_prepare(uint64_t *rng) {
         step(rng, STEP_ALLOCS_MAX, STEP_FREES_MAX);
         check_partition();
     }
-    commit();
+    advance();
     check_partition();
 }
 

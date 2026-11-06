@@ -31,12 +31,12 @@ typedef struct {
     
 typedef struct {
     sprawl_cache *c;
-    fl_cursor    src;           // committed list suffix
-    fl_cursor    copy;          // COW'd head of `src`; pages freed in this commit are written here (or to overflow if full)
-    uint32_t     usable;        // [0, usable) entries in `copy` that can be re-allocated this commit
+    fl_cursor    src;           // list suffix as of the last advancement
+    fl_cursor    copy;          // COW'd head of `src`; pages freed in this advancement are written here (or to overflow if full)
+    uint32_t     usable;        // [0, usable) entries in `copy` that can be re-allocated this advancement
 
     // the overflow list holds any frees that `copy` can't accommodate. this list is 
-    // allocated on-demand, and is empty otherwise. at the end of a commit, if this 
+    // allocated on-demand, and is empty otherwise. at the end of an advancement, if this 
     // list is non-empty, its head becomes the new `src`.
     uint64_t     overflow_tail; // this page's link points to `copy`, so we need to hold a reference to keep it updated
     fl_cursor    overflow_head; 
@@ -66,9 +66,9 @@ SprawlResult freelist_init(sprawl_freelist *f, sprawl_cache *c, fl_cursor head, 
 // returns the current head of the freelist (src, copy, or overflow_head)
 fl_cursor freelist_head(const sprawl_freelist *f);
 
-// commits the freelist, making any pages freed this commit available for reclamation and 
-// clearing any intermediate state
-void freelist_commit(sprawl_freelist *f);
+// advances the freelist head, making any pages freed since the last advance available for 
+// reclamation and clearing any intermediate state
+void freelist_advance(sprawl_freelist *f);
 
 // consistency check on the freelist. calls `visit` once per page, and writes `entries_out` 
 // with the total number of free page numbers. The caller must provide a zeroed 

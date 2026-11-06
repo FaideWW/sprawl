@@ -38,14 +38,14 @@ static uint32_t insert_order[ENTRY_COUNT];
 static uint32_t delete_order[ENTRY_COUNT];
 static uint32_t delete_next;
 
-static void commit(void) {
+static void advance(void) {
     SprawlResult r;
     RUN(&c, r, cache_write_dirty(&c));
     CHECK(r == SprawlResult_OK);
     RUN(&c, r, cache_flush(&c));
     CHECK(r == SprawlResult_OK);
     c.generation++;
-    simple_alloc_commit(&sa);
+    simple_alloc_advance(&sa);
 }
 
 static void check_all(uint32_t count) {
@@ -118,7 +118,7 @@ static void check_tree(uint64_t inserted) {
 }
 
 static void check_model(void) {
-    commit();
+    advance();
     check_all(ENTRY_COUNT);
     check_tree(keys_in_tree);
 }
@@ -214,10 +214,10 @@ static void populate(uint64_t *rng, uint32_t inserts) {
     for (uint32_t i = 0; i < inserts; i++) {
         uint32_t idx = insert_order[i];
         insert_one(idx, values[idx]);
-        if (i % 5 == 0) commit();
+        if (i % 5 == 0) advance();
     }
 
-    commit();
+    advance();
     cache_drop_all(&c);
 }
 
@@ -253,7 +253,7 @@ static void prune_random(uint64_t *rng, uint32_t deletes) {
         delete_one(idx);
     }
 
-    commit();
+    advance();
     cache_drop_all(&c);
 }
 
@@ -282,10 +282,10 @@ static void test_btree_get(uint64_t *rng) {
 
         insert_one(idx, values[idx]);
 
-        if (i % 5 == 0) commit();
+        if (i % 5 == 0) advance();
     }
 
-    commit();
+    advance();
     cache_drop_all(&c);
 
     check_model();
@@ -492,13 +492,13 @@ static void test_btree_delete(uint64_t *rng) {
         // delete 0; the tree should collapse down to a leaf root with 255 only
         delete_one(0);
 
-        commit();
+        advance();
         CHECK(tree.height == initial_height);
         check_tree(1);
 
         // re-insert key 0 to force a root collapse 
         insert_one(0, values[0]);
-        commit();
+        advance();
 
         CHECK(tree.height == 1);
         check_tree(2);
@@ -586,7 +586,7 @@ static void test_btree_batched_ops(uint64_t *rng) {
             } break;
         }
         cache_unpin_all(&c);
-        commit();
+        advance();
 
         if (tree.height > initial_height) root_splits++;
         if (tree.height < initial_height) root_collapses++;
@@ -810,14 +810,14 @@ static void test_btree_random(uint64_t *rng) {
                 cache_unpin_all(&c);
             }
         } 
-        if (i % 5 == 0) commit();
+        if (i % 5 == 0) advance();
         if (i % 3 == 0) {
-            commit();
+            advance();
             check_model();
         }
     }
 
-    commit();
+    advance();
     cache_drop_all(&c);
 
     check_model();

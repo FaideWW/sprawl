@@ -106,10 +106,10 @@ static void create_ok(const uint8_t *d, uint8_t count) {
     batches_at[1] = 0;
 }
 
-// commit and verify success
-static void commit_ok(void) {
+// persist and verify success
+static void persist_ok(void) {
     SprawlResult r;
-    RUN(&c, r, store_commit(&s));
+    RUN(&c, r, store_persist(&s));
     CHECK(r == SprawlResult_OK);
 
     for (uint32_t i = 0; i < MEM_IO_PAGES_MAX; i++) {
@@ -211,12 +211,12 @@ static void damage(uint64_t *rng, uint64_t page_num) {
 }
 
 // verify that corrupting either page does not brick the entire file.
-// at most, one commit is lost (if the newer superblock is damaged)
+// at most, one persist is lost (if the newer superblock is damaged)
 static void each_page_loss(uint64_t *rng, void (*mutate)(uint64_t *,uint64_t)) {
     uint64_t newest = seq_model;
     uint64_t opened[2];
 
-    // find the commits for both pages. we force reopen to load each 
+    // find the persists for both pages. we force reopen to load each 
     // page by invalidating the other one, and then record the seq_num 
     // of the valid page.
     for (uint64_t p = 0; p < 2; p++) {
@@ -250,19 +250,19 @@ static void test_store_new_document_is_empty(void) {
     }
 }
 
-// after any sequence of commits, reopening the file always matches the most recent
+// after any sequence of persists, reopening the file always matches the most recent
 static void test_store_reopen(uint64_t *rng, uint8_t count) {
     fresh();
     create_ok(doc_a, count);
     for (uint32_t i = 0; i < 16; i++) {
         if (rng_next(rng) % 4 != 0) insert_batch();
-        commit_ok();
+        persist_ok();
         if (rng_next(rng) % 2 == 0) reopen_ok(seq_model, seq_model);
     }
     reopen_ok(seq_model, seq_model);
 }
 
-// superblock damage should lose at most one commit of writes
+// superblock damage should lose at most one persist of writes
 static void test_store_damaged_superblock(uint64_t *rng) {
     fresh();
     create_ok(doc_a, 2);
@@ -270,19 +270,19 @@ static void test_store_damaged_superblock(uint64_t *rng) {
 
     for (uint32_t i = 0; i < 6; i++) {
         insert_batch();
-        commit_ok();
+        persist_ok();
         each_page_loss(rng, damage);
     }
 }
 
 // a damaged superblock should be replaced with a corrected one 
-// on the next commit
+// on the next persist
 static void test_store_superblock_repair(uint64_t *rng) {
     fresh();
     create_ok(doc_a, 2);
     for (uint32_t i = 0; i < 3; i++) {
         insert_batch();
-        commit_ok();
+        persist_ok();
     }
 
     uint64_t newest = seq_model;
@@ -298,10 +298,10 @@ static void test_store_superblock_repair(uint64_t *rng) {
         reopen_ok(newest - 1, newest - 1);
     }
 
-    // write and commit should repair and replace the damaged new page, 
+    // write and persist should repair and replace the damaged new page, 
     // and retain the seq_num adjacency
     insert_batch();
-    commit_ok();
+    persist_ok();
     CHECK(seq_model == newest);
     reopen_ok(newest, newest);
     each_page_loss(rng, damage);
@@ -317,7 +317,7 @@ static void test_store_no_superblock(uint64_t *rng) {
     fresh();
     create_ok(doc_a, 2);
     insert_batch();
-    commit_ok();
+    persist_ok();
 
     // corrupt both pages
     damage(rng, 0);
@@ -330,7 +330,7 @@ static void test_store_document_overwrite(void) {
     fresh();
     create_ok(doc_a, 2);
     insert_batch();
-    commit_ok();
+    persist_ok();
     restart();
     create_ok(doc_b, 2);
     CHECK(reopen(tables, table_count) == SprawlResult_Corrupt);
@@ -341,9 +341,9 @@ static void test_store_bad_tables(void) {
     fresh();
     create_ok(doc_a, 2);
     insert_batch();
-    commit_ok();
+    persist_ok();
     insert_batch();
-    commit_ok();
+    persist_ok();
 
     // different counts
     CHECK(reopen(tables, 1) == SprawlResult_Corrupt);
@@ -374,7 +374,7 @@ static void test_store_open_io_error(void) {
     fresh();
     create_ok(doc_a, 2);
     insert_batch();
-    commit_ok();
+    persist_ok();
 
     uint64_t newest = seq_model;
 
@@ -400,18 +400,18 @@ static void test_store_open_io_error(void) {
     }
 }
 
-// io errors on commit are reported correctly to the caller 
+// io errors on persist are reported correctly to the caller 
 // as IOError. the store latches into a failed state and does 
-// not re-attempt to commit when asked (until re-opened)
-static void test_store_commit_io_error(uint64_t *rng) {
+// not re-attempt to persist when asked (until re-opened)
+static void test_store_persist_io_error(uint64_t *rng) {
     for (uint64_t k = 1;; k++) {
         fresh();
         create_ok(doc_a, 2);
         insert_batch();
-        commit_ok();
+        persist_ok();
 
         // test against "store that was just opened" vs "store 
-        // that was just committed to"
+        // that was just persisted to"
         if (rng_next(rng) % 2 == 0) reopen_ok(seq_model, seq_model);
 
         uint64_t before = seq_model;
@@ -421,9 +421,9 @@ static void test_store_commit_io_error(uint64_t *rng) {
         uint64_t fail_at = m.calls + k;
         m.fail_call = fail_at;
         SprawlResult r;
-        RUN(&c, r, store_commit(&s));
+        RUN(&c, r, store_persist(&s));
         if (r == SprawlResult_OK) {
-            // as in the open_io_error tests: commit must 
+            // as in the open_io_error tests: persist must 
             // complete without reaching the failure call,
             // and must have exercised at least one failure 
             // path before reaching here
@@ -435,8 +435,8 @@ static void test_store_commit_io_error(uint64_t *rng) {
         }
         CHECK(r == SprawlResult_IOError);
 
-        // re-committing does not try to write again
-        CHECK(store_commit(&s) == SprawlResult_IOError);
+        // re-persisting does not try to write again
+        CHECK(store_persist(&s) == SprawlResult_IOError);
         CHECK(m.request_queue_size == 0);
 
         m.fail_call = 0;
@@ -491,7 +491,7 @@ static void test_store_invalid_superblock(uint64_t *rng) {
     // an empty document can only have a bad pagecount
     fresh();
     create_ok(doc_a, 2);
-    commit_ok();
+    persist_ok();
     patch_case = 0;
     each_page_loss(rng, patch);
 
@@ -499,7 +499,7 @@ static void test_store_invalid_superblock(uint64_t *rng) {
     create_ok(doc_a, 2);
     for (uint32_t i = 0; i < 3; i++) {
         insert_batch();
-        commit_ok();
+        persist_ok();
     }
     
     for (patch_case = 1; patch_case < PATCH_CASES; patch_case++) {
@@ -512,10 +512,10 @@ static void test_store_superblock_format(void) {
     create_ok(doc_a, 2);
     for (uint32_t i = 0; i < 3; i++) {
         insert_batch();
-        commit_ok();
+        persist_ok();
     }
 
-    // three commits puts us at seq 4 => page 0
+    // three persists puts us at seq 4 => page 0
     const uint8_t *p = m.pages[0];
     CHECK(get_u32le(p) == crc32c(p + 4, PAGE_SIZE_BYTES - 4)); // checksum
     CHECK(p[4] == 1);                           // kind: superblock
@@ -557,34 +557,34 @@ static void crash_keep_superblocks(void) {
     }
 }
 
-// crashes during or after a commit should preserve the latest 
-// on-disk commit, or the commit in progress if it made it to disk
+// crashes during or after a persist should preserve the latest 
+// on-disk persist, or the persist in progress if it made it to disk
 // after the crash
 static void test_store_crash(void) {
     for (uint64_t i = 1;; i++) {
         fresh();
         create_ok(doc_a, 2);
         insert_batch();
-        commit_ok();
+        persist_ok();
 
         uint64_t durable = seq_model;
 
-        // power outage during a commit. any non-flushed page is at risk
+        // power outage during a persist. any non-flushed page is at risk
         uint64_t attempt = durable + 1;
         insert_batch();
         batches_at[attempt] = batches;
 
         m.fail_all_from_call = m.calls + i;
         SprawlResult r;
-        RUN(&c, r, store_commit(&s));
+        RUN(&c, r, store_persist(&s));
         m.fail_all_from_call = 0;
 
-        // if the commit completed, only check the latest commit
+        // if the persist completed, only check the latest persist
         if (r == SprawlResult_OK) durable = attempt;
         crash_keep_superblocks();
 
-        // as above: either the most recent commit survived (attempt), or 
-        // the previous commit survived (durable)
+        // as above: either the most recent persist survived (attempt), or 
+        // the previous persist survived (durable)
         reopen_ok(durable, attempt);
         if (r == SprawlResult_OK) break;
     }
@@ -613,7 +613,7 @@ void test_store(uint64_t seed) {
     TIMED(test_store_document_overwrite());
     TIMED(test_store_bad_tables());
     TIMED(test_store_open_io_error());
-    TIMED(test_store_commit_io_error(&seed));
+    TIMED(test_store_persist_io_error(&seed));
     TIMED(test_store_invalid_superblock(&seed));
     TIMED(test_store_superblock_format());
     TIMED(test_store_crash());
