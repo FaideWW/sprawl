@@ -47,18 +47,23 @@ static void test_page_validate(void) {
     CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 6) == SprawlResult_Corrupt);
 
     // checksum invalid 
-    page_make_valid(page, &header);
-    page[100] ^= 0x01;
-    CHECK(page_checksum_verify(page) == SprawlResult_Corrupt);
+    const uint32_t flips[] = { 4, 100, PAGE_SIZE_BYTES - 1 };
+    for (uint32_t i = 0; i < 3; i++) {
+        page_make_valid(page, &header);
+        page[flips[i]] ^= 0x01;
+        CHECK(page_checksum_verify(page) == SprawlResult_Corrupt);
+    }
     
 
     // reserved bytes nonzero
     page_make_valid(page, &header);
     page[7] = 0x01;
     CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
-    page_make_valid(page, &header);
-    page[12] = 0x01;
-    CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    for (uint32_t i = 10; i < 16; i++) {
+        page_make_valid(page, &header);
+        page[i] = 0x01;
+        CHECK(page_header_verify(page, 42, PageKind_Leaf, 1, 7) == SprawlResult_Corrupt);
+    }
     
     // all-zero page
     memset(page, 0, PAGE_SIZE_BYTES);
@@ -74,6 +79,24 @@ static void test_page_validate(void) {
     page_make_valid(page, &header);
     page[5] = 0;
     CHECK(page_header_verify(page, 42, PageKind_Leaf, 0, 7) == SprawlResult_Corrupt);
+
+    // branch has level 0
+    sprawl_page_header branch = header;
+    branch.kind = PageKind_Branch;
+    branch.level = 1;
+    page_make_valid(page, &branch);
+    CHECK(page_header_verify(page, 42, PageKind_Branch, 1, 7) == SprawlResult_OK);
+    page[6] = 0;
+    CHECK(page_header_verify(page, 42, PageKind_Branch, 1, 7) == SprawlResult_Corrupt);
+
+    // a page outside a tree has a table 
+    sprawl_page_header list = header;
+    list.kind = PageKind_Freelist;
+    list.table = 0;
+    page_make_valid(page, &list);
+    CHECK(page_header_verify(page, 42, PageKind_Freelist, 0, 7) == SprawlResult_OK);
+    page[5] = 1;
+    CHECK(page_header_verify(page, 42, PageKind_Freelist, 1, 7) == SprawlResult_Corrupt);
 }
 
 void test_page(void) {

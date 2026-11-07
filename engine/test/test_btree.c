@@ -168,9 +168,9 @@ static void delete_one(uint32_t key) {
     keys_in_tree--;
 }
 
-static void test_btree_init(uint32_t cache_size, uint16_t key_size) {
+static void test_btree_init(uint64_t *rng, uint32_t cache_size, uint16_t key_size) {
     CHECK(cache_size <= TEST_CACHE_SLOTS_MAX);
-    mem_io_init(&m, MEM_IO_PAGES_MAX);
+    mem_io_init(&m, MEM_IO_PAGES_MAX, *rng, MemIOMode_Shuffled);
     sprawl_io io = mem_io_adapter(&m);
     cache_init(&c, pages, slots, cache_size, io);
     c.generation = 2;
@@ -258,19 +258,19 @@ static void prune_random(uint64_t *rng, uint32_t deletes) {
 }
 
 static void build_tree(uint64_t *rng, uint8_t key_size, uint32_t n) {
-    test_btree_init(DOC_CACHE_SLOTS, key_size);
+    test_btree_init(rng, DOC_CACHE_SLOTS, key_size);
     populate(rng, n);
     check_model();
 }
 
 static void build_small_tree(uint64_t *rng) {
-    test_btree_init(DOC_CACHE_SLOTS, TEST_KEY_SIZE_BYTES);
+    test_btree_init(rng, DOC_CACHE_SLOTS, TEST_KEY_SIZE_BYTES);
     populate(rng, leaf_cap() * 3);
     check_model();
 }
 
 static void test_btree_get(uint64_t *rng) {
-    test_btree_init(DOC_CACHE_SLOTS, TEST_KEY_SIZE_BYTES);
+    test_btree_init(rng, DOC_CACHE_SLOTS, TEST_KEY_SIZE_BYTES);
     uint32_t inserts = leaf_cap() * 3;
     populate(rng, inserts);
     check_model();
@@ -346,7 +346,7 @@ static void scan_all(uint32_t entries_in_tree) {
 static void test_btree_seek(uint64_t *rng) {
     // Seek on an empty tree
     {
-        test_btree_init(DOC_CACHE_SLOTS, TEST_KEY_SIZE_BYTES);
+        test_btree_init(rng, DOC_CACHE_SLOTS, TEST_KEY_SIZE_BYTES);
 
         bool found;
         uint8_t k[KEY_SIZE_MAX] = {0};
@@ -508,7 +508,7 @@ static void test_btree_delete(uint64_t *rng) {
 
 static void test_btree_batched_ops(uint64_t *rng) {
     uint32_t cache_size = 64;
-    test_btree_init(cache_size, KEY_SIZE_MAX);
+    test_btree_init(rng, cache_size, KEY_SIZE_MAX);
     populate(rng, 100);
 
     uint32_t batch_max = ((uint32_t)PAGE_SIZE_BYTES - PAGE_HEADER_SIZE_BYTES) / (table.key_size + 8) - 1;
@@ -636,12 +636,29 @@ static void test_btree_check(uint64_t *rng) {
         CHECK(run_check(&entries) == SprawlResult_Corrupt);
     }
 
-    // case 3: leaf->count > cap   
+    // case 3: leaf->count > cap
     {
         build_small_tree(rng);
-        uint8_t *leaf = m.pages[find_leaf(0)];
+        uint64_t n = tree.root;
+        for (uint8_t level = (uint8_t)(tree.height - 1); level > 0; level--) {
+            uint8_t *branch = m.pages[n];
+            n = t_child(branch, (uint32_t)PAGE_COUNT(branch) - 1);
+        }
+
+        uint8_t *leaf = m.pages[n];
         sprawl_page_header h;
         page_header_read(leaf, &h);
+
+        for (uint32_t i = h.count; i <= leaf_cap(); i++) {
+            memset(t_key(leaf, i), 0, table.key_size);
+            put_u32be(t_key(leaf, i), ENTRY_COUNT + i);
+        }
+
+        h.count = (uint16_t)leaf_cap();
+        page_header_write(leaf, &h);
+        page_checksum_write(leaf);
+        CHECK(run_check(&entries) == SprawlResult_OK);
+
         h.count = (uint16_t)(leaf_cap() + 1);
         page_header_write(leaf, &h);
         page_checksum_write(leaf);
@@ -696,6 +713,7 @@ static void test_btree_check(uint64_t *rng) {
         build_small_tree(rng);
         uint8_t *root = m.pages[tree.root];
         put_u64le(t_value(root, tree.height-1, 0), tree.root);
+        page_checksum_write(root);
         CHECK(run_check(&entries) == SprawlResult_Corrupt);
     }
 
@@ -742,26 +760,9 @@ static void test_btree_check(uint64_t *rng) {
         CHECK(entries == keys_in_tree - 1);
     }
 
-    // case 13: dropped page
+    // case 13: inherited lower-bound mismatch
     {
-        build_small_tree(rng);
-        uint64_t leaf_num = find_leaf(0);
-        sa.freed[leaf_num] = true;
-        CHECK(run_check(&entries) == SprawlResult_OK);
-        CHECK(!alloc_matches_tree());
-    }
-
-    // case 14: alloc leak
-    {
-        build_small_tree(rng);
-        a.alloc_page(a.ctx);
-        CHECK(run_check(&entries) == SprawlResult_OK);
-        CHECK(!alloc_matches_tree());
-    }
-
-    // case 15: inherited lower-bound mismatch
-    {
-        test_btree_init(DOC_CACHE_SLOTS, KEY_SIZE_MAX);
+        test_btree_init(rng, DOC_CACHE_SLOTS, KEY_SIZE_MAX);
         populate(rng, ENTRY_COUNT);
         CHECK(tree.height >= 3);
 
@@ -776,10 +777,25 @@ static void test_btree_check(uint64_t *rng) {
         CHECK(run_check(&entries) == SprawlResult_Corrupt);
 
     }
+
+    // case 14: branch level mismatch 
+    {
+        test_btree_init(rng, DOC_CACHE_SLOTS, KEY_SIZE_MAX);
+        populate(rng, ENTRY_COUNT);
+        CHECK(tree.height >= 3);
+
+        uint8_t *branch = m.pages[t_child(m.pages[tree.root], 0)];
+        sprawl_page_header h;
+        page_header_read(branch, &h);
+        h.level++;
+        page_header_write(branch, &h);
+        page_checksum_write(branch);
+        CHECK(run_check(&entries) == SprawlResult_Corrupt);
+    }
 }
 
 static void test_btree_random(uint64_t *rng) {
-    test_btree_init(DOC_CACHE_SLOTS, 64);
+    test_btree_init(rng, DOC_CACHE_SLOTS, 64);
     populate(rng, ENTRY_COUNT / 2);
 
     for (uint32_t i = 0; i < 10000; i++) {

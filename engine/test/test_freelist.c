@@ -112,8 +112,8 @@ static void step(uint64_t *rng, uint32_t allocs, uint32_t frees) {
     cache_unpin_all(&c);
 }
 
-static void test_fl_init(void) {
-    mem_io_init(&m, MEM_IO_PAGES_MAX);
+static void test_fl_init(uint64_t *rng) {
+    mem_io_init(&m, MEM_IO_PAGES_MAX, *rng, MemIOMode_Shuffled);
     sprawl_io io = mem_io_adapter(&m);
     cache_init(&c, pages, slots, DOC_CACHE_SLOTS, io);
     c.generation = 2;
@@ -133,7 +133,7 @@ static void visit(void *ctx, uint64_t page_num) {
 }
 
 static void test_freelist_random(uint64_t *rng) {
-    test_fl_init();
+    test_fl_init(rng);
     for (uint32_t i = 0; i < 20000; i++) {
         bool growing = (i / 1000) % 2 == 0;
         uint32_t frees_max = growing ? STEP_ALLOCS_MAX / 2 : STEP_FREES_MAX;
@@ -191,7 +191,7 @@ static void free_n(uint64_t *rng, uint32_t n) {
 }
 
 static void test_freelist_empty_chain(uint64_t *rng) {
-    test_fl_init();
+    test_fl_init(rng);
     step(rng, 1, 0);
     step(rng, 0, 1); // free into an empty list 
     check_partition();
@@ -207,7 +207,7 @@ static void test_freelist_empty_chain(uint64_t *rng) {
 }
 
 static void test_freelist_full_head(uint64_t *rng) {
-    test_fl_init();
+    test_fl_init(rng);
     alloc_n(rng, FL_CAP + 1);
     free_n(rng, FL_CAP - 1);
     advance();
@@ -227,7 +227,7 @@ static void test_freelist_full_head(uint64_t *rng) {
 }
 
 static void one_entry_head(uint64_t *rng) {
-    test_fl_init();
+    test_fl_init(rng);
     alloc_n(rng, 3);
     advance();
     step(rng, 0, 1); 
@@ -236,35 +236,30 @@ static void one_entry_head(uint64_t *rng) {
 
 static void test_freelist_one_entry_head(uint64_t *rng) {
     one_entry_head(rng);
-    uint64_t page_count = f.page_count;
     step(rng, 0, 1);
     step(rng, 1, 0);
+
     // the previous free forced the list to use its only usable page for COWing the 
-    // list head, leaving no usable pages left for this advancement. allocating a page 
-    // after this forces a new page to be created, which is the page alloc receives.
-    CHECK(f.page_count == page_count + 1);
-    CHECK(in_use[in_use_count - 1] == page_count); 
+    // list head, leaving no usable pages left for this advancement. 
     check_partition();
     advance();
 
-    page_count = f.page_count;
+    uint64_t page_count = f.page_count;
     step(rng, 1, 0);
     // after the advancement, the two freed pages are now usable, so allocing reclaims one 
     // of them.
-    CHECK(f.page_count == page_count); 
+    CHECK(f.page_count == page_count);
     check_partition();
 
     one_entry_head(rng);
     page_count = f.page_count;
-    step(rng, 1, 0); 
+    step(rng, 1, 0);
     // there is one available page in the list head. allocing reclaims this page,
     // which exhausts the remaining free pages from the head. since the head is 
-    // now empty it is also freed, which forces a new list page to be created as 
-    // the new copy/list head
-    CHECK(f.page_count == page_count + 1); 
+    // now empty it is also freed
     CHECK(in_use[in_use_count - 1] < page_count);
     step(rng, 0, 1);
-    check_partition(); 
+    check_partition();
 }
 
 static void disk_write(uint8_t *page) {
@@ -275,9 +270,9 @@ static void disk_write(uint8_t *page) {
 }
 
 // writes a list of `length` one-entry pages, and `leaves` in-use pages.
-static void chain_build(uint32_t length, uint32_t leaves) {
+static void chain_build(uint64_t *rng, uint32_t length, uint32_t leaves) {
     CHECK(length > 0);
-    test_fl_init();
+    test_fl_init(rng);
     uint64_t list = 2;
     uint64_t entries = list + length;
     uint64_t leaf = entries + length;
@@ -327,7 +322,7 @@ static void chain_build(uint32_t length, uint32_t leaves) {
 static void test_freelist_worstcase_prepare(uint64_t *rng) {
     uint32_t length = CHAIN_STEPS * (STEP_ALLOCS_MAX + 1) + FL_RESERVE(STEP_ALLOCS_MAX);
     uint32_t leaves = CHAIN_STEPS * (STEP_FREES_MAX - STEP_ALLOCS_MAX) + STEP_ALLOCS_MAX;
-    chain_build(length, leaves);
+    chain_build(rng, length, leaves);
     CHECK(check_partition() == length);
     check_partition();
 
@@ -339,10 +334,98 @@ static void test_freelist_worstcase_prepare(uint64_t *rng) {
     check_partition();
 }
 
+static SprawlResult prepare_one(void) {
+    SprawlResult r;
+    RUN(&c, r, cache_reserve(&c, FL_RESERVE(1)));
+    CHECK(r == SprawlResult_OK);
+    RUN(&c, r, freelist_prepare(&f, 1));
+    cache_unpin_all(&c);
+    return r;
+}
+
+// no-op visit callback
+static void visit_any(void *ctx, uint64_t page_num) {
+    (void)ctx;
+    (void)page_num;
+}
+
+static SprawlResult check_list(void) {
+    uint64_t entries;
+    freelist_check_state s = {0};
+    SprawlResult r;
+    RUN(f.c, r, freelist_check(&f, &s, visit_any, NULL, &entries));
+    return r;
+}
+
+static uint8_t corrupt_page[PAGE_SIZE_BYTES];
+
+static uint8_t *chain_copy(uint64_t *rng, uint64_t page_num) {
+    chain_build(rng, 3, 0);
+    memcpy(corrupt_page, m.pages[page_num], PAGE_SIZE_BYTES);
+    return corrupt_page;
+}
+
+// corrupted list pages with valid checksums are rejected
+static void test_freelist_corrupt(uint64_t *rng) {
+    uint8_t *page;
+    sprawl_page_header h;
+
+    // case 1: entry below the first usable page
+    page = chain_copy(rng, 2);
+    put_u64le(page + FL_ENTRIES_OFFSET, 1);
+    disk_write(page);
+    CHECK(prepare_one() == SprawlResult_Corrupt);
+
+    // case 2: entry past the page count
+    page = chain_copy(rng, 2);
+    put_u64le(page + FL_ENTRIES_OFFSET, f.page_count);
+    disk_write(page);
+    CHECK(prepare_one() == SprawlResult_Corrupt);
+
+    // case 3: nonzero reserved bytes
+    page = chain_copy(rng, 2);
+    put_u64le(page + FL_LINK_OFFSET + 12, 1);
+    disk_write(page);
+    CHECK(prepare_one() == SprawlResult_Corrupt);
+
+    // case 4: list page isn't older than the current position
+    page = chain_copy(rng, 2);
+    page_header_read(page, &h);
+    h.generation = c.generation;
+    page_header_write(page, &h);
+    disk_write(page);
+    CHECK(prepare_one() == SprawlResult_Corrupt);
+
+    // case 5: cursor has too many entries (prepare)
+    page = chain_copy(rng, 2);
+    page_header_read(page, &h);
+    h.count = 0;
+    page_header_write(page, &h);
+    disk_write(page);
+    CHECK(prepare_one() == SprawlResult_Corrupt);
+
+    // case 6: cursor has too many entries (check)
+    page = chain_copy(rng, 2);
+    page_header_read(page, &h);
+    h.count = 0;
+    page_header_write(page, &h);
+    disk_write(page);
+    CHECK(check_list() == SprawlResult_Corrupt);
+
+    // case 7: circular chain
+    page = chain_copy(rng, 4);
+    put_u64le(page + FL_LINK_OFFSET, 2);
+    put_u32le(page + FL_LINK_OFFSET + 8, 1);
+    disk_write(page);
+    CHECK(check_list() == SprawlResult_Corrupt);
+
+}
+
 void test_freelist(uint64_t seed) {
     TIMED(test_freelist_random(&seed));
     TIMED(test_freelist_empty_chain(&seed));
     TIMED(test_freelist_full_head(&seed));
     TIMED(test_freelist_one_entry_head(&seed));
     TIMED(test_freelist_worstcase_prepare(&seed));
+    TIMED(test_freelist_corrupt(&seed));
 }

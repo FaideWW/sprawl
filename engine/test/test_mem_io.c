@@ -10,8 +10,8 @@
 
 static mem_io m;
 
-static void mem_io_test_smoke(void) {
-    mem_io_init(&m, MEM_IO_PAGES_MAX);
+static void mem_io_test_smoke(uint64_t *rng) {
+    mem_io_init(&m, MEM_IO_PAGES_MAX, *rng, MemIOMode_InOrder);
     sprawl_io io = mem_io_adapter(&m);
     uint8_t page[PAGE_SIZE_BYTES];
     for (size_t i = 0; i < sizeof(page); i++) {
@@ -74,6 +74,6 @@ static void mem_io_test_smoke(void) {
 
 }
 
-void test_mem_io(void) {
-    TIMED(mem_io_test_smoke());
+void test_mem_io(uint64_t seed) {
+    TIMED(mem_io_test_smoke(&seed));
 }

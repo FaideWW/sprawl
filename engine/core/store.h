@@ -50,6 +50,7 @@ typedef enum {
     StoreState_PersistFlush1,
     StoreState_PersistSuperblock,
     StoreState_PersistFlush2,
+    StoreState_InTransaction,
     StoreState_Failed,
 } StoreState;
 
@@ -81,8 +82,9 @@ typedef struct {
     uint8_t state;      // StoreState
     SprawlResult error;
 
-    sprawl_superblock best;
-    bool has_best;
+    sprawl_superblock next;
+    sprawl_superblock committed;
+    bool has_committed;
     uint8_t sb[PAGE_SIZE_BYTES];
 } sprawl_store;
 
@@ -96,6 +98,10 @@ SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *ta
 
 SprawlResult store_persist(sprawl_store *s);
 sprawl_alloc store_alloc(sprawl_store *s);
+
+void txn_begin(sprawl_store *s);
+void txn_commit(sprawl_store *s);
+SprawlResult txn_abort(sprawl_store *s);
 
 #endif // SPRAWL_STORE_H_
 

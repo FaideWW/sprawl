@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <string.h>
 #include "mem_io.h"
 #include "bytes.h"
@@ -85,9 +86,7 @@ static void process_request(mem_io *m, const sprawl_io_request *req, sprawl_io_c
     }
 }
 
-static uint32_t mem_io_complete(void *ctx, sprawl_io_completion *out, uint32_t max) {
-    mem_io *m = (mem_io *)ctx;
-    uint32_t capped_max = (max > m->request_queue_size) ? m->request_queue_size : max;
+static uint32_t complete_deterministic(mem_io *m, sprawl_io_completion *out, uint32_t capped_max) {
     for (uint32_t i = 0; i < capped_max; i++) {
         process_request(m, &m->request_queue[i], &out[i]);
     }
@@ -99,10 +98,36 @@ static uint32_t mem_io_complete(void *ctx, sprawl_io_completion *out, uint32_t m
     return capped_max;
 }
 
-void mem_io_init(mem_io *m, uint32_t pages_count) {
+static uint32_t complete_random(mem_io *m, sprawl_io_completion *out, uint32_t capped_max) {
+    uint32_t to_complete = (uint32_t)(rng_next(&m->seed) % (capped_max + 1));
+    for (uint32_t i = 0; i < to_complete; i++) {
+        uint32_t n = (uint32_t)(rng_next(&m->seed) % m->request_queue_size);
+        process_request(m, &m->request_queue[n], &out[i]);
+        // assumption: we can safely reorder the queue during complete_random, because 
+        // the ordering doesn't matter when picking randomly. this isn't true if we 
+        // intend to support arbitrary mode-switching (partially completing a queue in random, 
+        // then deterministic, and so on). if we do that, we need to do array shifting instead.
+        m->request_queue[n] = m->request_queue[m->request_queue_size - 1];
+        m->request_queue_size--;
+    }
+
+    return to_complete;
+}
+
+static uint32_t mem_io_complete(void *ctx, sprawl_io_completion *out, uint32_t max) {
+    mem_io *m = (mem_io *)ctx;
+    uint32_t capped_max = (max > m->request_queue_size) ? m->request_queue_size : max;
+    if (m->mode == MemIOMode_InOrder) return complete_deterministic(m, out, capped_max);
+    if (m->mode == MemIOMode_Shuffled) return complete_random(m, out, capped_max);
+    CHECK(false);
+}
+
+void mem_io_init(mem_io *m, uint32_t pages_count, uint64_t seed, uint8_t mode) {
     CHECK(pages_count <= MEM_IO_PAGES_MAX);
     memset(m, 0, sizeof(mem_io));
     m->pages_count = pages_count;
+    m->seed = seed;
+    m->mode = mode;
 }
 
 sprawl_io mem_io_adapter(mem_io *m) {

@@ -25,7 +25,7 @@ static sprawl_cache c;
 static mem_io m;
 
 static void test_cache_init(uint64_t *rng) {
-    mem_io_init(&m, MEM_IO_PAGES_MAX);
+    mem_io_init(&m, MEM_IO_PAGES_MAX, *rng, MemIOMode_Shuffled);
     for (uint32_t i = 0; i < INITIAL_PAGES; i++) {
         sprawl_page_header h = {
             .kind = PageKind_Leaf,
@@ -342,8 +342,7 @@ static void test_cache_dropped_step(uint64_t *rng) {
     r = cache_pin(&c, 0, PageKind_Leaf, 1, &page);
     CHECK(r == SprawlResult_Pending);
     cache_unpin_all(&c);
-    cache_poll(&c);
-    CHECK(c.in_flight == 0);
+    while (c.in_flight > 0) cache_poll(&c);
     uint64_t reads = m.reads;
     RUN(&c, r, cache_reserve(&c, 1));
     CHECK(r == SprawlResult_OK);
@@ -374,7 +373,7 @@ static void test_cache_reserve_idempotency(uint64_t *rng) {
     CHECK(c.in_flight == queue_len);
     
     uint64_t writes = m.writes;
-    cache_poll(&c);
+    while (c.in_flight > 0) cache_poll(&c);
     CHECK(m.writes - writes == to_reserve);
     CHECK(cache_reserve(&c, to_reserve) == SprawlResult_OK);
 }

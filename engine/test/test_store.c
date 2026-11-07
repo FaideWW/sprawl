@@ -19,6 +19,7 @@
 #define BATCH_SIZE 40
 #define PATCH_CASES 13
 #define SEQ_MAX 2048
+#define BIG_TXN_BATCH_COUNT 8
 
 // io
 static mem_io m;
@@ -54,8 +55,8 @@ static void restart(void) {
 }
 
 // reset model state
-static void fresh(void) {
-    mem_io_init(&m, MEM_IO_PAGES_MAX);
+static void fresh(uint64_t *rng) {
+    mem_io_init(&m, MEM_IO_PAGES_MAX, *rng, MemIOMode_Shuffled);
     restart();
     batches = 0;
     batches_max = 0;
@@ -64,7 +65,7 @@ static void fresh(void) {
 }
 
 // insert one key into the document
-static void insert_one(sprawl_tree *t, uint32_t key) {
+static SprawlResult insert_one(sprawl_tree *t, uint32_t key) {
     uint8_t k[KEY_SIZE_MAX] = {0};
     uint8_t v[VALUE_SIZE_MAX] = {0};
     put_u32be(k, key);
@@ -73,15 +74,22 @@ static void insert_one(sprawl_tree *t, uint32_t key) {
 
     SprawlResult r;
     RUN(&c, r, cache_reserve(&c, n + FL_RESERVE(n)));
-    CHECK(r == SprawlResult_OK);
+    if (r != SprawlResult_OK) return r;
     RUN(&c, r, freelist_prepare(&s.f, n));
-    CHECK(r == SprawlResult_OK);
+    if (r != SprawlResult_OK) return r;
     RUN(&c, r, btree_insert_prepare(&c, t, k));
-    CHECK(r == SprawlResult_OK);
+    if (r != SprawlResult_OK) return r;
 
     sprawl_alloc a = store_alloc(&s);
     btree_insert_apply(&c, &a, t, k, v);
     cache_unpin_all(&c);
+
+    return SprawlResult_OK;
+}
+
+static void insert_one_ok(sprawl_tree *t, uint32_t key) {
+    SprawlResult r = insert_one(t, key);
+    CHECK(r == SprawlResult_OK);
 }
 
 // insert the next batch of keys into the document
@@ -89,7 +97,7 @@ static void insert_batch(void) {
     CHECK(table_count > 0);
     sprawl_tree *t = &s.trees[batches % table_count];
     for (uint32_t i = 0; i < BATCH_SIZE ; i++) {
-        insert_one(t, batches * BATCH_SIZE + i);
+        insert_one_ok(t, batches * BATCH_SIZE + i);
     }
     batches++;
     if (batches_max < batches) batches_max = batches;
@@ -241,10 +249,10 @@ static void each_page_loss(uint64_t *rng, void (*mutate)(uint64_t *,uint64_t)) {
 }
 
 // new documents open at seq 1 with no rows
-static void test_store_new_document_is_empty(void) {
+static void test_store_new_document_is_empty(uint64_t *rng) {
     const uint8_t counts[] = { 0, 1, 2, STORE_TABLES_MAX };
     for (uint32_t i = 0; i < sizeof(counts); i++) {
-        fresh();
+        fresh(rng);
         create_ok(doc_a, counts[i]);
         reopen_ok(1, 1);
     }
@@ -252,7 +260,7 @@ static void test_store_new_document_is_empty(void) {
 
 // after any sequence of persists, reopening the file always matches the most recent
 static void test_store_reopen(uint64_t *rng, uint8_t count) {
-    fresh();
+    fresh(rng);
     create_ok(doc_a, count);
     for (uint32_t i = 0; i < 16; i++) {
         if (rng_next(rng) % 4 != 0) insert_batch();
@@ -264,7 +272,7 @@ static void test_store_reopen(uint64_t *rng, uint8_t count) {
 
 // superblock damage should lose at most one persist of writes
 static void test_store_damaged_superblock(uint64_t *rng) {
-    fresh();
+    fresh(rng);
     create_ok(doc_a, 2);
     each_page_loss(rng, damage);
 
@@ -278,7 +286,7 @@ static void test_store_damaged_superblock(uint64_t *rng) {
 // a damaged superblock should be replaced with a corrected one 
 // on the next persist
 static void test_store_superblock_repair(uint64_t *rng) {
-    fresh();
+    fresh(rng);
     create_ok(doc_a, 2);
     for (uint32_t i = 0; i < 3; i++) {
         insert_batch();
@@ -310,11 +318,11 @@ static void test_store_superblock_repair(uint64_t *rng) {
 // files with no superblock (or with damage to both superblocks) should 
 // refuse to open
 static void test_store_no_superblock(uint64_t *rng) {
-    fresh();
+    fresh(rng);
     // open a file that has never been created
     CHECK(reopen(tables, 2) == SprawlResult_Corrupt);
 
-    fresh();
+    fresh(rng);
     create_ok(doc_a, 2);
     insert_batch();
     persist_ok();
@@ -326,8 +334,8 @@ static void test_store_no_superblock(uint64_t *rng) {
 }
 
 // creating a new file on top of an old one should refuse to open
-static void test_store_document_overwrite(void) {
-    fresh();
+static void test_store_document_overwrite(uint64_t *rng) {
+    fresh(rng);
     create_ok(doc_a, 2);
     insert_batch();
     persist_ok();
@@ -337,8 +345,8 @@ static void test_store_document_overwrite(void) {
 }
 
 // opening documents with mismatched table data should fail
-static void test_store_bad_tables(void) {
-    fresh();
+static void test_store_bad_tables(uint64_t *rng) {
+    fresh(rng);
     create_ok(doc_a, 2);
     insert_batch();
     persist_ok();
@@ -370,8 +378,8 @@ static void test_store_bad_tables(void) {
 
 // io errors on open are reported correctly to the caller 
 // as IOError
-static void test_store_open_io_error(void) {
-    fresh();
+static void test_store_open_io_error(uint64_t *rng) {
+    fresh(rng);
     create_ok(doc_a, 2);
     insert_batch();
     persist_ok();
@@ -405,7 +413,7 @@ static void test_store_open_io_error(void) {
 // not re-attempt to persist when asked (until re-opened)
 static void test_store_persist_io_error(uint64_t *rng) {
     for (uint64_t k = 1;; k++) {
-        fresh();
+        fresh(rng);
         create_ok(doc_a, 2);
         insert_batch();
         persist_ok();
@@ -489,13 +497,13 @@ static void patch(uint64_t *rng, uint64_t page_num) {
 // skipped
 static void test_store_invalid_superblock(uint64_t *rng) {
     // an empty document can only have a bad pagecount
-    fresh();
+    fresh(rng);
     create_ok(doc_a, 2);
     persist_ok();
     patch_case = 0;
     each_page_loss(rng, patch);
 
-    fresh();
+    fresh(rng);
     create_ok(doc_a, 2);
     for (uint32_t i = 0; i < 3; i++) {
         insert_batch();
@@ -507,8 +515,8 @@ static void test_store_invalid_superblock(uint64_t *rng) {
     }
 }
 
-static void test_store_superblock_format(void) {
-    fresh();
+static void test_store_superblock_format(uint64_t *rng) {
+    fresh(rng);
     create_ok(doc_a, 2);
     for (uint32_t i = 0; i < 3; i++) {
         insert_batch();
@@ -560,9 +568,9 @@ static void crash_keep_superblocks(void) {
 // crashes during or after a persist should preserve the latest 
 // on-disk persist, or the persist in progress if it made it to disk
 // after the crash
-static void test_store_crash(void) {
+static void test_store_crash(uint64_t *rng) {
     for (uint64_t i = 1;; i++) {
-        fresh();
+        fresh(rng);
         create_ok(doc_a, 2);
         insert_batch();
         persist_ok();
@@ -590,6 +598,138 @@ static void test_store_crash(void) {
     }
 }
 
+static SprawlResult run_big_transaction(void) {
+    batches_max = batches + BIG_TXN_BATCH_COUNT;
+    for (uint32_t i = batches; i < batches + BIG_TXN_BATCH_COUNT; i++) {
+        uint32_t idx = i % table_count;
+        for (uint32_t j = i * BATCH_SIZE; j < (i+1) * BATCH_SIZE; j++) {
+            SprawlResult r = insert_one(&s.trees[idx], j);
+            if (r != SprawlResult_OK) return r;
+        }
+    }
+
+    return SprawlResult_OK;
+}
+
+// aborting a transaction that forced early writes restores the 
+// store to its prior state
+static void test_txn_large_abort(uint64_t *rng) {
+    SprawlResult r;
+    for (uint32_t k = 1;; k++) {
+        fresh(rng);
+        create_ok(doc_a, STORE_TABLES_MAX);
+        insert_batch();
+        persist_ok();
+
+        
+        uint64_t last_writes = m.writes;
+        txn_begin(&s);
+        uint64_t fail_at = m.calls + k;
+        m.fail_call = fail_at;
+        // fill the cache
+        r = run_big_transaction();
+        m.fail_call = 0;
+
+        if (r == SprawlResult_OK) {
+            CHECK(m.writes > last_writes);
+            CHECK(k > 1);
+            break;
+        } else {
+            CHECK(r == SprawlResult_IOError);
+        }
+
+        RUN(&c, r, txn_abort(&s));
+        CHECK(r == SprawlResult_OK);
+        insert_batch();
+        persist_ok();
+
+        batches = batches_at[seq_model];
+        insert_batch();
+        persist_ok();
+        reopen_ok(seq_model, seq_model);
+    }
+
+    RUN(&c, r, txn_abort(&s));
+    CHECK(r == SprawlResult_OK);
+
+    check_data();
+    check_partition();
+    batches = batches_at[seq_model];
+    insert_batch();
+    persist_ok();
+    reopen_ok(seq_model, seq_model);
+}
+
+// aborting a transaction after the disk refuses a write 
+// restores to pre-transaction state
+static void test_txn_disk_full(uint64_t *rng) {
+    fresh(rng);
+    create_ok(doc_a, STORE_TABLES_MAX);
+    insert_batch();
+    persist_ok();
+
+    txn_begin(&s);
+
+    uint64_t page_count = s.f.page_count;
+    m.pages_count = (uint32_t)s.f.page_count;
+
+    SprawlResult r = run_big_transaction();
+    CHECK(r == SprawlResult_NoSpace);
+    
+    RUN(&c, r, txn_abort(&s));
+    CHECK(r == SprawlResult_OK);
+
+    check_data();
+    check_partition();
+    CHECK(s.f.page_count == page_count);
+
+    m.pages_count = MEM_IO_PAGES_MAX;
+    insert_batch();
+    persist_ok();
+    reopen_ok(seq_model, seq_model);
+}
+
+// reopening after a crash mid-transaction restores pre-transaction state
+static void test_txn_crash(uint64_t *rng) {
+    fresh(rng);
+    create_ok(doc_a, STORE_TABLES_MAX);
+    insert_batch();
+    persist_ok();
+
+    txn_begin(&s);
+
+    uint64_t page_count = s.f.page_count;
+    uint64_t writes = m.writes;
+    SprawlResult r = run_big_transaction();
+    CHECK(r == SprawlResult_OK);
+    CHECK(m.writes > writes);
+    mem_io_crash(&m, rng);
+
+    reopen_ok(seq_model, seq_model);
+    CHECK(s.f.page_count == page_count);
+}
+
+// a persisted transaction is durable
+static void test_txn_commit(uint64_t *rng) {
+    fresh(rng);
+    create_ok(doc_a, STORE_TABLES_MAX);
+    insert_batch();
+    persist_ok();
+
+    txn_begin(&s);
+    SprawlResult r = run_big_transaction();
+    CHECK(r == SprawlResult_OK);
+   
+    txn_commit(&s);
+    batches += BIG_TXN_BATCH_COUNT;
+    check_data();
+    check_partition();
+    persist_ok();
+    uint64_t page_count = s.f.page_count;
+    reopen_ok(seq_model, seq_model);
+    CHECK(s.f.page_count == page_count);
+}
+
 void test_store(uint64_t seed) {
     for (uint8_t i = 0; i < 16; i++) {
         doc_a[i] = (uint8_t)(0xA0 + i);
@@ -604,17 +744,22 @@ void test_store(uint64_t seed) {
         };
     }
 
-    TIMED(test_store_new_document_is_empty());
+    TIMED(test_store_new_document_is_empty(&seed));
     TIMED(test_store_reopen(&seed, 2));
     TIMED(test_store_reopen(&seed, STORE_TABLES_MAX));
     TIMED(test_store_damaged_superblock(&seed));
     TIMED(test_store_superblock_repair(&seed));
     TIMED(test_store_no_superblock(&seed));
-    TIMED(test_store_document_overwrite());
-    TIMED(test_store_bad_tables());
-    TIMED(test_store_open_io_error());
+    TIMED(test_store_document_overwrite(&seed));
+    TIMED(test_store_bad_tables(&seed));
+    TIMED(test_store_open_io_error(&seed));
     TIMED(test_store_persist_io_error(&seed));
     TIMED(test_store_invalid_superblock(&seed));
-    TIMED(test_store_superblock_format());
-    TIMED(test_store_crash());
+    TIMED(test_store_superblock_format(&seed));
+    TIMED(test_store_crash(&seed));
+
+    TIMED(test_txn_large_abort(&seed));
+    TIMED(test_txn_disk_full(&seed));
+    TIMED(test_txn_crash(&seed));
+    TIMED(test_txn_commit(&seed));
 }

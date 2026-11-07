@@ -5,7 +5,7 @@
 #include <time.h>
 
 void test_page(void);
-void test_mem_io(void);
+void test_mem_io(uint64_t seed);
 void test_cache(uint64_t seed);
 void test_btree(uint64_t seed);
 void test_crc32c(uint64_t seed);

@@ -132,8 +132,8 @@ SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *ta
         SprawlResult r = cache_raw(c, IoOp_Read, 0, s->sb);
         if (r != SprawlResult_OK) return r;
         if (superblock_decode(s->sb, 0, &sb_temp) == SprawlResult_OK) {
-            s->best = sb_temp;
-            s->has_best = true;
+            s->committed = sb_temp;
+            s->has_committed = true;
         }
         s->state = StoreState_OpenPage1;
     }
@@ -143,20 +143,21 @@ SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *ta
         if (r != SprawlResult_OK) return r;
         if (superblock_decode(s->sb, 1, &sb_temp) == SprawlResult_OK) {
 
-            if (!s->has_best) {
-                s->best = sb_temp;
-                s->has_best = true;
+            if (!s->has_committed) {
+                s->committed = sb_temp;
+                s->has_committed = true;
             } else {
-                if (memcmp(s->best.doc_id, sb_temp.doc_id, sizeof(sb_temp.doc_id)) != 0) return SprawlResult_Corrupt;
-                if (s->best.seq_num < sb_temp.seq_num) s->best = sb_temp;
+                if (memcmp(s->committed.doc_id, sb_temp.doc_id, sizeof(sb_temp.doc_id)) != 0) return SprawlResult_Corrupt;
+                if (s->committed.seq_num < sb_temp.seq_num) s->committed = sb_temp;
             }
         }
 
-        if (!s->has_best) return SprawlResult_Corrupt;
+        if (!s->has_committed) return SprawlResult_Corrupt;
 
-        if (s->best.table_count != table_count) return SprawlResult_Corrupt;
+        if (s->committed.table_count != table_count) return SprawlResult_Corrupt;
+
         for (uint32_t i = 0; i < table_count; i++) {
-            superblock_table_desc t = s->best.tables[i];
+            superblock_table_desc t = s->committed.tables[i];
             if (t.id != tables[i].id) return SprawlResult_Corrupt;
             if (t.key_size != tables[i].key_size) return SprawlResult_Corrupt;
             if (t.value_size != tables[i].value_size) return SprawlResult_Corrupt;
@@ -167,14 +168,14 @@ SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *ta
             };
         }
 
-        s->table_count = s->best.table_count;
-        memcpy(s->doc_id, s->best.doc_id, 16);
-        s->seq_num = s->best.seq_num;
+        s->table_count = s->committed.table_count;
+        memcpy(s->doc_id, s->committed.doc_id, 16);
+        s->seq_num = s->committed.seq_num;
         
         s->c = c;
-        r = freelist_init(&s->f, s->c, s->best.freelist_head, s->best.page_count);
+        r = freelist_init(&s->f, s->c, s->committed.freelist_head, s->committed.page_count);
         if (r != SprawlResult_OK) return r;
-        s->c->generation = s->best.seq_num + 1;
+        s->c->generation = s->committed.seq_num + 1;
         s->state = StoreState_OpenFlush;
     }
 
@@ -190,11 +191,33 @@ SprawlResult store_open(sprawl_store *s, sprawl_cache *c, const sprawl_table *ta
 static SprawlResult persist_fail(sprawl_store *s, SprawlResult r) {
     s->state = StoreState_Failed;
     s->error = r;
+    if (s->c->in_flight > 0) return SprawlResult_Pending;
     return r;
 }
 
+static void superblock_write(sprawl_store *s, sprawl_superblock *sb) {
+    memset(sb, 0, sizeof(sprawl_superblock));
+    sb->seq_num = s->seq_num + 1;
+    sb->page_count = s->f.page_count;
+    sb->freelist_head = freelist_head(&s->f);
+    sb->table_count = s->table_count;
+    memcpy(sb->doc_id, s->doc_id, 16);
+    for (uint32_t i = 0; i < s->table_count; i++) {
+        sb->tables[i] = (superblock_table_desc){
+            .root = s->trees[i].root,
+            .height = s->trees[i].height,
+            .id = s->trees[i].table->id,
+            .key_size = s->trees[i].table->key_size,
+            .value_size = s->trees[i].table->value_size,
+        };
+    }
+}
+
 SprawlResult store_persist(sprawl_store *s) {
-    if (s->state == StoreState_Failed) return s->error;
+    if (s->state == StoreState_Failed) { 
+        if (s->c->in_flight > 0) return SprawlResult_Pending;
+        return s->error; 
+    }
     CHECK(s->state == StoreState_Ready || 
           (s->state >= StoreState_PersistPages && s->state <= StoreState_PersistFlush2));
     CHECK(s->c->reserved == 0);
@@ -215,24 +238,10 @@ SprawlResult store_persist(sprawl_store *s) {
         SprawlResult r = cache_flush(s->c);
         if (r == SprawlResult_Pending) return r;
         if (r != SprawlResult_OK) return persist_fail(s, r);
-
-        sprawl_superblock sb = {
-            .seq_num = s->seq_num + 1,
-            .page_count = s->f.page_count,
-            .freelist_head = freelist_head(&s->f),
-            .table_count = s->table_count,
-        };
-        memcpy(sb.doc_id, s->doc_id, 16);
-        for (uint32_t i = 0; i < s->table_count; i++) {
-            sb.tables[i] = (superblock_table_desc){
-                .root = s->trees[i].root,
-                .height = s->trees[i].height,
-                .id = s->trees[i].table->id,
-                .key_size = s->trees[i].table->key_size,
-                .value_size = s->trees[i].table->value_size,
-            };
-        }
-        superblock_encode(&sb, s->sb);
+        
+        superblock_write(s, &s->next);
+        
+        superblock_encode(&s->next, s->sb);
         s->state = StoreState_PersistSuperblock;
     }
 
@@ -251,6 +260,7 @@ SprawlResult store_persist(sprawl_store *s) {
 
         s->seq_num++;
         s->c->generation++;
+        s->committed = s->next;
         freelist_advance(&s->f);
         s->state = StoreState_Ready;
     }
@@ -260,4 +270,41 @@ SprawlResult store_persist(sprawl_store *s) {
 
 sprawl_alloc store_alloc(sprawl_store *s) {
     return freelist_alloc(&s->f);
+}
+
+void txn_begin(sprawl_store *s) {
+    CHECK(s->state == StoreState_Ready);
+    CHECK(s->committed.page_count == s->f.page_count);
+    fl_cursor flc = freelist_head(&s->f);
+    CHECK(flc.page == s->committed.freelist_head.page && flc.remaining == s->committed.freelist_head.remaining);
+    
+    for (uint32_t i = 0; i < s->table_count; i++) {
+        CHECK(s->trees[i].root == s->committed.tables[i].root);
+        CHECK(s->trees[i].height == s->committed.tables[i].height);
+    }
+
+    s->state = StoreState_InTransaction;
+}
+
+void txn_commit(sprawl_store *s) {
+    CHECK(s->state == StoreState_InTransaction);
+    s->state = StoreState_Ready;
+}
+
+SprawlResult txn_abort(sprawl_store *s) {
+    CHECK(s->state == StoreState_InTransaction);
+    if (s->c->in_flight > 0) return SprawlResult_Pending;
+
+    cache_drop_all(s->c);
+
+    for (uint32_t i = 0; i < s->committed.table_count; i++) {
+        superblock_table_desc t = s->committed.tables[i];
+        s->trees[i].root = t.root;
+        s->trees[i].height = t.height;
+    }
+
+    CHECK(freelist_init(&s->f, s->c, s->committed.freelist_head, s->committed.page_count) == SprawlResult_OK);
+
+    s->state = StoreState_Ready;
+    return SprawlResult_OK;
 }

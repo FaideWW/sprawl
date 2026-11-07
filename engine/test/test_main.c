@@ -5,7 +5,7 @@
 #include "tests.h"
 
 static void run_all(uint64_t seed) {
-    TIMED(test_mem_io());
+    TIMED(test_mem_io(seed));
     TIMED(test_page());
     TIMED(test_cache(seed));
     TIMED(test_btree(seed));
