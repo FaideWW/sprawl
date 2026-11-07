@@ -195,7 +195,7 @@ static SprawlResult persist_fail(sprawl_store *s, SprawlResult r) {
     return r;
 }
 
-static void superblock_write(sprawl_store *s, sprawl_superblock *sb) {
+static void superblock_fill(sprawl_store *s, sprawl_superblock *sb) {
     memset(sb, 0, sizeof(sprawl_superblock));
     sb->seq_num = s->seq_num + 1;
     sb->page_count = s->f.page_count;
@@ -239,7 +239,7 @@ SprawlResult store_persist(sprawl_store *s) {
         if (r == SprawlResult_Pending) return r;
         if (r != SprawlResult_OK) return persist_fail(s, r);
         
-        superblock_write(s, &s->next);
+        superblock_fill(s, &s->next);
         
         superblock_encode(&s->next, s->sb);
         s->state = StoreState_PersistSuperblock;

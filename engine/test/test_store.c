@@ -640,8 +640,8 @@ static void test_txn_large_abort(uint64_t *rng) {
 
         RUN(&c, r, txn_abort(&s));
         CHECK(r == SprawlResult_OK);
-        insert_batch();
-        persist_ok();
+        check_data();
+        check_partition();
 
         batches = batches_at[seq_model];
         insert_batch();
