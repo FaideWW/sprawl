@@ -1,4 +1,4 @@
-include backends/posix_file/posix_file.mk
+include backends/posix_file_io/posix_file_io.mk
 include engine/engine.mk
 
 ifndef SEED_BASE 
@@ -11,7 +11,7 @@ CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Wshadow \
 		  -Wconversion -Wsign-conversion -Wstrict-prototypes \
 		  -Wmissing-prototypes -Wvla -Werror \
 		  -g -fno-omit-frame-pointer \
-		  $(ENGINE_INC) $(ENGINE_TEST_INC) $(POSIX_FILE_INC) $(POSIX_FILE_TEST_INC) \
+		  $(ENGINE_INC) $(ENGINE_TEST_INC) $(POSIX_FILE_IO_INC) $(POSIX_FILE_IO_TEST_INC) \
 		  -msse4.2 \
 		  -DSPRAWL_PROFILE_TEST
 
@@ -24,20 +24,20 @@ endif
 CFLAGS_PERF := -O2
 CFLAGS_DEBUG := -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined
 
-HDR := $(ENGINE_HDR) $(ENGINE_TEST_HDR) $(POSIX_FILE_HDR) $(POSIX_FILE_TEST_HDR) 
+HDR := $(ENGINE_HDR) $(ENGINE_TEST_HDR) $(POSIX_FILE_IO_HDR) $(POSIX_FILE_IO_TEST_HDR) 
 
 CORE_SRC := $(ENGINE_SRC) $(ENGINE_TEST_SRC) hosts/test/test_main.c
-POSIX_FILE_BIN_SRC := $(ENGINE_SRC) $(POSIX_FILE_SRC) $(POSIX_FILE_TEST_SRC) hosts/test/main_posix_file.c
+POSIX_FILE_IO_BIN_SRC := $(ENGINE_SRC) $(POSIX_FILE_IO_SRC) $(POSIX_FILE_IO_TEST_SRC) hosts/test/main_posix_file_io.c
 
 DEBUG := build/native/debug_$(CRC)
 PERF := build/native/perf_$(CRC)
 
-BINS := test_core test_posix_file 
+BINS := test_core test_posix_file_io
 
 $(DEBUG)/test_core: $(CORE_SRC:%.c=$(DEBUG)/%.o)
 $(PERF)/test_core: $(CORE_SRC:%.c=$(PERF)/%.o)
-$(DEBUG)/test_posix_file: $(POSIX_FILE_BIN_SRC:%.c=$(DEBUG)/%.o)
-$(PERF)/test_posix_file: $(POSIX_FILE_BIN_SRC:%.c=$(PERF)/%.o)
+$(DEBUG)/test_posix_file_io: $(POSIX_FILE_IO_BIN_SRC:%.c=$(DEBUG)/%.o)
+$(PERF)/test_posix_file_io: $(POSIX_FILE_IO_BIN_SRC:%.c=$(PERF)/%.o)
 
 $(DEBUG)/%.o: %.c $(HDR)
 	@mkdir -p $(@D)
