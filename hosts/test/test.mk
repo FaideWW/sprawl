@@ -64,8 +64,8 @@ check: $(BINS:%=$(DEBUG)/%)
 seeds: $(SEED_RUNS)
 	@echo "$(words $(SEEDS)) seeds passed"
 
-$(SEED_RUNS): seed-%: $(DEBUG)/test_core 
-	@ASAN_OPTIONS=handle_abort=1 ./$< $* > /dev/null && echo "seed $* ok"
+$(SEED_RUNS): seed-%: $(BINS:%=$(DEBUG)/%)
+	@for b in $^; do ASAN_OPTIONS=handle_abort=1 ./$$b $* > /dev/null || exit 1; done; echo "seed $* ok"
 
 clean:
 	rm -rf build/

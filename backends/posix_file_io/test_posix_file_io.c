@@ -171,7 +171,7 @@ static void test_pfio_ring_wrap(void) {
 static void write_ok(int fd, uint8_t *buf, uint32_t buf_size) {
     uint32_t bytes_written = 0;
     while (bytes_written < buf_size) {
-        ssize_t result = pwrite(fd, buf, 100, PAGE_SIZE_BYTES);
+        ssize_t result = pwrite(fd, buf + bytes_written, buf_size - bytes_written, PAGE_SIZE_BYTES + bytes_written);
         CHECK(result > 0);
         bytes_written += (uint32_t)result;
     }

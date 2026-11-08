@@ -7,7 +7,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "bytes.h"
 #include "result.h"
 
 /**
