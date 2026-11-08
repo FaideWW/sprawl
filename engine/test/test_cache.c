@@ -179,7 +179,6 @@ static void test_cache_all_dirty(uint64_t *rng) {
 
     uint32_t expected_writes = rng_next(rng) % DOC_CACHE_SLOTS + 1;
     
-    uint64_t writes = m.writes;
     RUN(&c, r, cache_reserve(&c, expected_writes));
     CHECK(r == SprawlResult_OK);
 }
@@ -342,7 +341,6 @@ static void test_cache_dropped_step(uint64_t *rng) {
     CHECK(r == SprawlResult_Pending);
     cache_unpin_all(&c);
     while (c.in_flight > 0) cache_poll(&c);
-    uint64_t reads = m.reads;
     RUN(&c, r, cache_reserve(&c, 1));
     CHECK(r == SprawlResult_OK);
     r = cache_pin(&c, 0, PageKind_Leaf, 1, &page);

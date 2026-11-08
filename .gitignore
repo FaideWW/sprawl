@@ -1,6 +1,7 @@
 build/
 .*
 !.gitignore
+compile_commands.json
 
 gmon.out
 cg.out

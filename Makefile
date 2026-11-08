@@ -1,4 +1,8 @@
-.PHONY: check test test-perf
+.PHONY: check clean seeds test test-perf 
+MAKEFLAGS += --no-print-directory
 
-check test test-perf:
-	@$(MAKE) -j$(shell nproc) -C engine -f test.mk $@ 
+check clean test test-perf:
+	@$(MAKE) -j$(shell nproc) -f hosts/test/test.mk $@ 
+
+seeds:
+	@$(MAKE) -j$(shell nproc) -f hosts/test/test.mk -O -k seeds
