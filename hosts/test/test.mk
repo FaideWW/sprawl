@@ -7,7 +7,7 @@ endif
 SEEDS := $(shell seq $(SEED_BASE) $$(($(SEED_BASE) + 11)))
 SEED_RUNS := $(SEEDS:%=seed-%)
 
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Wshadow \
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
 		  -Wconversion -Wsign-conversion -Wstrict-prototypes \
 		  -Wmissing-prototypes -Wvla -Werror \
 		  -g -fno-omit-frame-pointer \
@@ -27,7 +27,7 @@ CFLAGS_DEBUG := -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined
 HDR := $(ENGINE_HDR) $(ENGINE_TEST_HDR) $(POSIX_FILE_IO_HDR) $(POSIX_FILE_IO_TEST_HDR) 
 
 CORE_SRC := $(ENGINE_SRC) $(ENGINE_TEST_SRC) hosts/test/test_main.c
-POSIX_FILE_IO_BIN_SRC := $(ENGINE_SRC) $(POSIX_FILE_IO_SRC) $(POSIX_FILE_IO_TEST_SRC) hosts/test/main_posix_file_io.c
+POSIX_FILE_IO_BIN_SRC := $(ENGINE_SRC) $(POSIX_FILE_IO_SRC) $(POSIX_FILE_IO_TEST_SRC) hosts/test/test_posix_file_io_main.c
 
 DEBUG := build/native/debug_$(CRC)
 PERF := build/native/perf_$(CRC)

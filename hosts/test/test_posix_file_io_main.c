@@ -8,7 +8,7 @@
 int main (int argc, char **argv) {
     uint64_t seed = argc > 1 ? strtoull(argv[1], NULL, 10) : (uint64_t)time(NULL);
     printf("seed %" PRIu64 "\n", seed);
-    TIMED(test_posix_file_io(seed));
+    TIMED(test_pfio(seed));
     printf("ok\n");
     return 0;
 }
