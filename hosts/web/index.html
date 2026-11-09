@@ -5,7 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <title>sprawl</title>
         <link rel="stylesheet" href="./index.css" />
-        <script type="module" src="./dist/main.js"></script>
+        <script type="module" src="./dist/boot.js"></script>
     </head>
     <body>
         <div id="app">
@@ -37,6 +37,9 @@
             </div>
             <div class="centered-overlay" id="render-failed-message" hidden>
                 Graphics unavailable. Please close and re-open the tab.
+            </div>
+            <div class="centered-overlay" id="file-locked-message" hidden>
+                [PLACEHOLDER] File lock acquisition failed, open in another tab.
             </div>
             <canvas id="canvas"></canvas>
             <div id="eraser-cursor" hidden></div>

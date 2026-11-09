@@ -10,7 +10,7 @@
     "module": "nodenext",
     "target": "esnext",
     "types": [],
-    "lib": ["esnext", "dom", "dom.iterable"],
+    "lib": ["esnext", "dom", "dom.iterable", "webworker"],
 
     // Other Outputs
     "sourceMap": true,

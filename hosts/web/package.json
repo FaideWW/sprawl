@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "serve": "python3 -m http.server"
+    "serve": "python3 -m http.server 8888"
   },
   "keywords": [],
   "author": "",

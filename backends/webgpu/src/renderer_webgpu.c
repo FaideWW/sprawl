@@ -7,6 +7,7 @@
 #include "shaders.h"
 
 #define UNUSED(x) (void)(x)
+#define MAX_FRAMES_IN_FLIGHT 2
 
 typedef struct {
     float viewport[2];
@@ -32,6 +33,7 @@ static struct {
     uint32_t stroke_buf_cap;
     uint64_t storage_buffer_size_limit;
     int frames_in_flight;
+    bool surface_stale;
 
     uint32_t generation;
 
@@ -137,15 +139,9 @@ static void handle_timestamp_readback_buffer_map(
     r.ts_readback_pending = false;
 }
 
-typedef enum {
-ConfigureSurfaceSuccess = 0,
-ConfigureSurfaceError = 1,
-ConfigureSurfaceNoop = 2
-} ConfigureSurfaceResult;
-
-static ConfigureSurfaceResult configure_surface(void) {
+static void configure_surface(void) {
     if (r.width == 0 || r.height == 0) {
-        return ConfigureSurfaceNoop;
+        return;
     }
     WGPUSurfaceConfiguration config = WGPU_SURFACE_CONFIGURATION_INIT;
     config.width = r.width;
@@ -164,7 +160,8 @@ static ConfigureSurfaceResult configure_surface(void) {
     config.alphaMode = WGPUCompositeAlphaMode_Opaque;
 
     wgpuSurfaceConfigure(r.surface, &config);
-    return ConfigureSurfaceSuccess;
+    r.surface_stale = false;
+    return;
 }
 
 static void write_uniforms(void) {
@@ -341,14 +338,7 @@ static void handle_device_request(
 
     wgpuSurfaceCapabilitiesFreeMembers(surface_caps);
 
-    ConfigureSurfaceResult configure_result = configure_surface();
-
-    if (configure_result == ConfigureSurfaceError) {
-        r.status = RendererStatus_Error;
-        WGPUStringView err_msg = (WGPUStringView){ "failed to configure surface", WGPU_STRLEN };
-        log_error(err_msg);
-        return;
-    }
+    configure_surface();
 
     wgpuDevicePushErrorScope(r.device, WGPUErrorFilter_Validation);
     init_resources();
@@ -399,7 +389,7 @@ static void handle_adapter_request(
         r.has_timestamps = false;
     }
 
-    WGPULimits adapterLimits;
+    WGPULimits adapterLimits = WGPU_LIMITS_INIT;
     if (wgpuAdapterGetLimits(r.adapter, &adapterLimits) != WGPUStatus_Success) {
         r.status = RendererStatus_Error;
         log_error((WGPUStringView){ "failed to get adaper limits", WGPU_STRLEN });
@@ -484,15 +474,9 @@ void renderer_resize(uint32_t w, uint32_t h) {
     r.width = w;
     r.height = h;
 
-    if (!r.uniform_buf) {
-        return;
-    }
-
-    write_uniforms();
-
-    if (configure_surface() == ConfigureSurfaceError) {
-        r.status = RendererStatus_Error;
-    }
+    // don't reconfigure immediately; an out-of-order surface configuration can cause 
+    // a blank frame to be shown under certain conditions. 
+    r.surface_stale = true;
 }
 
 static bool grow_and_copy_point_buffer(uint32_t requested_points) {
@@ -562,21 +546,24 @@ int renderer_upload_points(const sprawl_point *points, uint32_t first, uint32_t 
 
 bool renderer_can_frame(void) {
     return (
-        !(r.status != RendererStatus_Ready) && 
-        !(r.width == 0 || r.height == 0) && 
-        !(r.frames_in_flight >= 2)
+        r.status == RendererStatus_Ready && 
+        r.width > 0 && r.height > 0 && 
+        r.frames_in_flight < MAX_FRAMES_IN_FLIGHT
     );
 }
 
 int renderer_frame(const sprawl_rendered_stroke *strokes, uint32_t count, const float clear_rgba[4]) {
-    if (r.status != RendererStatus_Ready) return -1;
-    if (r.width == 0 || r.height == 0) return -1;
-    if (r.frames_in_flight >= 2) return -1;
+    if (!renderer_can_frame()) return -1;
 
     if (count > r.stroke_buf_cap) {
         if (!grow_stroke_buffer(count)) return -1;
     }
     if (count > 0) wgpuQueueWriteBuffer(r.queue, r.stroke_buf, 0, strokes, count * sizeof(sprawl_rendered_stroke));
+
+    if (r.surface_stale) {
+        write_uniforms();
+        configure_surface();
+    }
 
     WGPUSurfaceTexture tex = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(r.surface, &tex);
