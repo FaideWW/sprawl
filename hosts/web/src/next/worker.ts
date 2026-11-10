@@ -28,9 +28,9 @@ function tick(now: number, size: { width: number; height: number } | null) {
 
     if (now - lastLogTime >= 1000) {
         if (lastLogTime > 0) {
-            console.log(
-                `ticks: ${tickCounter} - frames: ${engine._engine_frames_presented()}`,
-            );
+            // console.log(
+            //     `ticks: ${tickCounter} - frames: ${engine._engine_frames_presented()}`,
+            // );
         }
         tickCounter = 0;
         lastLogTime = now;
@@ -49,14 +49,46 @@ self.onmessage = (e) => {
     }
 };
 
+function fillRandomBuffer() {
+    const values = crypto.getRandomValues(new Uint8Array(16));
+    const docIdBuffer = engine._engine_random_buffer();
+    const heap = engine.HEAPU8;
+    for (let i = 0; i < values.length; i++) {
+        heap[docIdBuffer + i] = values[i]!;
+    }
+}
+
 navigator.locks.request(
     "sprawl_test_document",
     { ifAvailable: true },
-    (lock) => {
+    async (lock) => {
         if (lock === null) {
             post({ type: "lock_unavailable" });
         } else {
-            post({ type: "ready" });
+            try {
+                fillRandomBuffer();
+                const dir = await navigator.storage.getDirectory();
+                const filename = "document0.sprl";
+                const file = await dir.getFileHandle(filename, {
+                    create: true,
+                });
+                const handle = await file.createSyncAccessHandle();
+                engine.opfsHandle = handle;
+
+                const result = engine._engine_store_open(
+                    handle.getSize() === 0,
+                );
+
+                if (result === 0) {
+                    post({ type: "ready" });
+                } else {
+                    throw new Error(
+                        `store failed to open file. error code: ${result}`,
+                    );
+                }
+            } catch (e) {
+                console.error(e);
+            }
             return new Promise(() => {});
         }
     },

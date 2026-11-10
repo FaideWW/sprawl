@@ -65,10 +65,10 @@ static void posix_file_io_submit(void *ctx, sprawl_io_request *req) {
         } break;
         case IoOp_Write: {
             off_t page_offset = (off_t)(PAGE_SIZE_BYTES * req->page_num);
-            uint32_t bytes_read = 0;
+            uint32_t bytes_written = 0;
 
-            while (bytes_read < PAGE_SIZE_BYTES) {
-                ssize_t result = pwrite(f->fd, req->page + bytes_read, PAGE_SIZE_BYTES - bytes_read, page_offset + bytes_read);
+            while (bytes_written < PAGE_SIZE_BYTES) {
+                ssize_t result = pwrite(f->fd, req->page + bytes_written, PAGE_SIZE_BYTES - bytes_written, page_offset + bytes_written);
                 if (result == -1) {
                     // write error
                     if (errno == EINTR) continue;
@@ -78,7 +78,7 @@ static void posix_file_io_submit(void *ctx, sprawl_io_request *req) {
                     r = SprawlResult_IOError;
                     break;
                 } else {
-                    bytes_read += (uint32_t)result;
+                    bytes_written += (uint32_t)result;
                 }
             }
         } break;

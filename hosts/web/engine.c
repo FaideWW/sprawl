@@ -1,16 +1,35 @@
+#include <inttypes.h>
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include "io.h"
+#include "opfs.h"
+#include "page_cache.h"
+#include "profile.h"
 #include "renderer.h"
+#include "result.h"
+#include "store.h"
 
 #define SRGB_LINEAR_CUTOFF 0.04045f 
 #define SRGB_SLOPE 12.92f
 #define SRGB_GAMMA 2.4f
 #define SRGB_OFFSET 0.055f
 
+static uint8_t cache_pages[DOC_CACHE_SLOTS][PAGE_SIZE_BYTES];
+static sprawl_cache_slot cache_slots[DOC_CACHE_SLOTS];
+static sprawl_io_completion completions[DOC_CACHE_SLOTS + 2];
+static opfs_io io;
+static sprawl_cache c;
+static sprawl_store s;
+
+static uint8_t random_buf[16];
+static uint8_t doc_id[16];
+
 static float clear[4];
 
-static float srgb_to_linear(float c) {
-    return c <= SRGB_LINEAR_CUTOFF ? c / SRGB_SLOPE : powf((c + (SRGB_OFFSET)) / (1.0f + SRGB_OFFSET), SRGB_GAMMA);
+static float srgb_to_linear(float color) {
+    return color <= SRGB_LINEAR_CUTOFF ? color / SRGB_SLOPE : powf((color + (SRGB_OFFSET)) / (1.0f + SRGB_OFFSET), SRGB_GAMMA);
 }
 
 #define RENDERER_RETRY_COUNT 6
@@ -75,4 +94,38 @@ uint32_t engine_frames_presented(void) {
     uint32_t result = frames_presented;
     frames_presented = 0;
     return result;
+}
+
+SprawlResult engine_store_open(bool file_is_new);
+SprawlResult engine_store_open(bool file_is_new) {
+    opfs_init(&io, completions, DOC_CACHE_SLOTS + 2);
+    cache_init(&c, cache_pages, cache_slots, DOC_CACHE_SLOTS, opfs_adapter(&io));
+
+    if (file_is_new) {
+        memcpy(doc_id, random_buf, 16);
+    }
+
+    SprawlResult r = SprawlResult_Pending;
+    while (r == SprawlResult_Pending) {
+        cache_poll(&c);
+        if (file_is_new) r = store_create(&s, &c, NULL, 0, doc_id);
+        else             r = store_open(&s, &c, NULL, 0);
+    }
+
+    if (r == SprawlResult_OK) {
+        // NOTE: temporary integrity check
+        r = SprawlResult_Pending;
+        while (r == SprawlResult_Pending) {
+            cache_poll(&c);
+            r = store_persist(&s);
+        }
+        printf("store_persist=%d,store.seq_num=%" PRIu64 "\n", r, s.seq_num);
+    }
+
+    return r;
+}
+
+uint8_t *engine_random_buffer(void);
+uint8_t *engine_random_buffer(void) {
+    return random_buf;
 }
